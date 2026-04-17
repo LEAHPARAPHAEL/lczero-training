@@ -2,6 +2,7 @@ import os
 import requests
 import tarfile
 import json
+import random
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from tqdm import tqdm
@@ -10,9 +11,19 @@ def load_state(state_file):
     """Loads the progress state from disk, or creates a fresh one."""
     if os.path.exists(state_file):
         with open(state_file, 'r') as f:
-            return json.load(f)
+            state = json.load(f)
+            # Fallbacks in case an older version of the state file is found
+            return {
+                "total_games_extracted": state.get("total_games_extracted", 0),
+                "train_games_extracted": state.get("train_games_extracted", 0),
+                "test_games_extracted": state.get("test_games_extracted", 0),
+                "total_bytes_extracted": state.get("total_bytes_extracted", 0),
+                "processed_archives": state.get("processed_archives", [])
+            }
     return {
         "total_games_extracted": 0,
+        "train_games_extracted": 0,
+        "test_games_extracted": 0,
         "total_bytes_extracted": 0,
         "processed_archives": []
     }
@@ -22,25 +33,27 @@ def save_state(state_file, state):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
-def download_and_extract_smart(index_url, target_dir, target_games, max_gb):
+def download_and_split_smart(index_url, base_dir, target_games, max_gb, train_ratio=0.8):
     """
-    Downloads and extracts data until either the game count or disk space 
-    threshold is reached. Fully resumable.
+    Downloads, extracts, and randomly splits data into train/test directories
+    until limits are reached. Fully resumable.
     """
-    target_dir = os.path.expanduser(target_dir)
-    os.makedirs(target_dir, exist_ok=True)
+    base_dir = os.path.expanduser(base_dir)
+    train_dir = os.path.join(base_dir, "train")
+    test_dir = os.path.join(base_dir, "test")
     
-    # Convert GB to exact Bytes for calculation
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
+    
     max_bytes = max_gb * 1024 * 1024 * 1024
-    
-    state_file = os.path.join(target_dir, "resume_state.json")
+    state_file = os.path.join(base_dir, "resume_state.json")
     state = load_state(state_file)
 
-    print(f"Target Directory: {target_dir}")
-    print(f"Resuming from state: {state['total_games_extracted']} games, "
+    print(f"Base Directory: {base_dir}")
+    print(f"Resuming from state: {state['total_games_extracted']} total games "
+          f"({state['train_games_extracted']} train | {state['test_games_extracted']} test), "
           f"{state['total_bytes_extracted'] / (1024**3):.2f} GB used.")
     
-    # Check if we already hit the limits from a previous run
     if state["total_games_extracted"] >= target_games:
         print("\nTarget game count already reached in previous runs. Exiting.")
         return
@@ -68,29 +81,20 @@ def download_and_extract_smart(index_url, target_dir, target_games, max_gb):
         print("No valid archive files found on the page.")
         return
 
-    # Process files
     for file_name in file_links:
-        # 1. Skip files we already successfully processed
         if file_name in state["processed_archives"]:
             continue
 
-        # 2. Check limits before starting a new file
-        if state["total_games_extracted"] >= target_games:
-            print(f"\n[SUCCESS] Target of {target_games} games reached!")
-            break
-        if state["total_bytes_extracted"] >= max_bytes:
-            print(f"\n[SUCCESS] Max disk limit of {max_gb}GB reached!")
+        if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
             break
 
         file_url = urljoin(index_url, file_name)
         clean_file_name = os.path.basename(urlparse(file_url).path)
-        file_path = os.path.join(target_dir, clean_file_name)
+        file_path = os.path.join(base_dir, clean_file_name)
 
         print(f"\n--- Processing: {clean_file_name} ---")
         
         # --- PHASE A: Download ---
-        # Note: If a download was partially completed before a crash, 
-        # 'wb' mode cleanly overwrites the broken file and starts fresh.
         with requests.get(file_url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -103,30 +107,51 @@ def download_and_extract_smart(index_url, target_dir, target_games, max_gb):
                     size = f.write(chunk)
                     bar.update(size)
 
-        # --- PHASE B: Extract & Measure ---
-        print("Extracting and calculating disk footprint...")
+        # --- Inside Phase B: Extract & Split ---
+        print("Extracting and splitting files...")
         try:
             with tarfile.open(file_path, 'r:*') as tar:
                 members = tar.getmembers()
-                files_to_extract = [m for m in members if m.isfile()]
                 
-                # Calculate exactly how much space these files will take
-                extracted_size_bytes = sum(m.size for m in files_to_extract)
-                games_in_archive = len(files_to_extract)
+                # FILTERING: Only include files that look like games/chunks
+                # This ignores LICENSE, README, and directory entries
+                files_to_extract = [
+                    m for m in members 
+                    if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))
+                ]
                 
-                tar.extractall(path=target_dir, members=files_to_extract)
+                games_extracted_this_archive = 0
+                bytes_extracted_this_archive = 0
                 
-                # Update our live state
-                state["total_games_extracted"] += games_in_archive
-                state["total_bytes_extracted"] += extracted_size_bytes
+                for member in tqdm(files_to_extract, desc="Routing games", unit="file"):
+                    if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
+                        break
+
+                    # Random split logic
+                    if random.random() < train_ratio:
+                        dest_dir = train_dir
+                        state["train_games_extracted"] += 1
+                    else:
+                        dest_dir = test_dir
+                        state["test_games_extracted"] += 1
+
+                    # EXTRACTING WITH NESTED LAYOUT
+                    # This recreates the internal folders found in the .tar
+                    tar.extract(member, path=dest_dir)
+                    
+                    state["total_games_extracted"] += 1
+                    state["total_bytes_extracted"] += member.size
+                    games_extracted_this_archive += 1
+                    bytes_extracted_this_archive += member.size
+                
+                # Mark archive as processed only if we finished it or hit our global limits
                 state["processed_archives"].append(file_name)
-                
-                # Save progress immediately. If it crashes 1 second from now, we are safe.
                 save_state(state_file, state)
                 
                 current_gb = state["total_bytes_extracted"] / (1024**3)
-                print(f"Extracted {games_in_archive} games ({extracted_size_bytes / (1024**2):.2f} MB).")
+                print(f"Extracted {games_extracted_this_archive} games ({bytes_extracted_this_archive / (1024**2):.2f} MB).")
                 print(f"Running Total: {state['total_games_extracted']}/{target_games} games | {current_gb:.2f}/{max_gb} GB")
+                print(f"Current Split: Train({state['train_games_extracted']}) / Test({state['test_games_extracted']})")
                 
         except tarfile.TarError as e:
             print(f"Error extracting {clean_file_name}: {e}")
@@ -136,14 +161,16 @@ def download_and_extract_smart(index_url, target_dir, target_games, max_gb):
             os.remove(file_path)
             print("Deleted archive to reclaim disk space.")
 
-    print("\nScript execution finished.")
+    print("\n[SUCCESS] Pipeline execution finished.")
+    print(f"Final Count -> Train: {state['train_games_extracted']} | Test: {state['test_games_extracted']}")
 
 # --- Usage Example ---
 if __name__ == "__main__":
     URL = "https://data.lczero.org/files/training_data/test91/"
     DESTINATION_FOLDER = "~/leela/data"
     
-    TARGET_GAMES = 500000
-    MAX_DISK_SPACE_GB = 20  # Will stop automatically if it hits 20GB of extracted data
+    TARGET_GAMES = 1000000 
+    MAX_DISK_SPACE_GB = 40  
+    TRAIN_RATIO = 0.8  # 80% to train, 20% to test
     
-    download_and_extract_smart(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB)
+    download_and_split_smart(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO)
