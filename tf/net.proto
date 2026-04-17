@@ -364,6 +364,15 @@ message NetworkFormat {
     INPUT_EMBEDDING_PE_DENSE = 2;
   }
   optional InputEmbeddingFormat input_embedding = 10;
+
+  // --- ADDED FOR CHESSFORMER MASKS ---
+  message AttentionMask {
+    optional string piece_type = 1;
+    repeated uint32 head_indices = 2;
+    repeated uint32 layer_indices = 3;
+  }
+  repeated AttentionMask attention_masks = 11;
+  // -----------------------------------
 }
 
 message Format {

@@ -31,6 +31,36 @@ from net import Net
 
 from keras import backend as K
 
+def make_piece_pattern_mask(piece_type):
+    # Use -10000.0 instead of -1e9 to prevent NaN overflows in mixed float16 precision
+    mask = np.zeros((64, 64), dtype=float)
+    for i in range(64):
+        r1, c1 = divmod(i, 8)
+        for j in range(64):
+            r2, c2 = divmod(j, 8)
+            dr = abs(r1 - r2)
+            dc = abs(c1 - c2)
+            
+            valid = False
+            # A square should always be able to attend to itself
+            if i == j:
+                valid = True
+            elif piece_type == 'rook' and (dr == 0 or dc == 0):
+                valid = True
+            elif piece_type == 'bishop' and (dr == dc):
+                valid = True
+            elif piece_type == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+                valid = True
+            elif piece_type == 'queen' and (dr == 0 or dc == 0 or dr == dc):
+                valid = True
+            elif piece_type == 'king' and (dr <= 1 and dc <= 1):
+                valid = True
+            elif piece_type == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
+                valid = True
+                
+            if not valid:
+                mask[i, j] = -10000.0
+    return mask
 
 # @tf.custom_gradient
 # def gradient_checkpointed_matmul(x, kernel, bias):
@@ -482,6 +512,27 @@ class TFProcess:
             self.model_dtype = tf.float16
         else:
             raise ValueError("Unknown precision: {}".format(precision))
+        
+        # --- CHESSFORMER ATTENTION MASKS (PER LAYER) ---
+        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
+        num_layers = self.blocks # Assuming self.blocks holds the number of encoder layers
+        
+        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
+        
+        for rule in self.attention_masks_cfg:
+            piece = rule['piece']
+            heads = rule['heads']
+            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
+            
+            piece_mask = make_piece_pattern_mask(piece)
+            for l in layers:
+                if l < num_layers:
+                    for h in heads:
+                        if h < self.encoder_heads:
+                            mha_mask_np[l, 0, h, :, :] = piece_mask
+                            
+        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
+        # -----------------------------------------------
 
         # Scale the loss to prevent gradient underflow
         self.loss_scale = 1 if self.model_dtype == tf.float32 else loss_scale
@@ -1950,6 +2001,12 @@ class TFProcess:
         for weight in self.model.weights:
             numpy_weights.append([weight.name, weight.numpy()])
         self.net.fill_net_v2(numpy_weights)
+        # --- ADDED FOR CHESSFORMER MASKS ---
+        # Pass the config dictionary we parsed in __init__
+        if hasattr(self, 'attention_masks_cfg'):
+            self.net.set_attention_masks(self.attention_masks_cfg)
+        # -----------------------------------
+        
         self.net.save_proto(filename)
 
     @staticmethod
@@ -1960,7 +2017,7 @@ class TFProcess:
         # (batch_size, num_heads, 64, depth)
         return tf.transpose(reshaped, perm=[0, 2, 1, 3])
 
-    def scaled_dot_product_attention(self, q, k, v, name: str = None, inputs=None):
+    def scaled_dot_product_attention(self, q, k, v, name: str = None, inputs=None, layer_idx = 0):
 
         # 0 h 64 d, 0 h 64 d
         dk = tf.cast(tf.shape(k)[-1], self.model_dtype)
@@ -1981,6 +2038,11 @@ class TFProcess:
 
 
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+    
+        if hasattr(self, 'mha_mask'):
+            # Slice the mask for this specific layer
+            layer_mask = self.mha_mask[layer_idx, :, :heads, :, :]
+            scaled_attention_logits = scaled_attention_logits + layer_mask
 
         if self.use_smolgen:
             smolgen_weights = self.smolgen_weights(inputs, heads, self.smolgen_hidden_channels, self.smolgen_hidden_sz,
@@ -2008,7 +2070,7 @@ class TFProcess:
 
     # multi-head attention in encoder blocks
 
-    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, initializer, name: str, att_expansion: int=1):
+    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, initializer, name: str, att_expansion: int=1, layer_idx = 0):
         depth = d_model * att_expansion
         assert depth % num_heads == 0
 
@@ -2052,7 +2114,7 @@ class TFProcess:
         v = self.split_heads(v, batch_size, num_heads, head_depth)
 
         scaled_attention, attention_weights = self.scaled_dot_product_attention(
-            q, k, v, name=name, inputs=inputs)
+            q, k, v, name=name, inputs=inputs, layer_idx=layer_idx)
 
         if num_heads > 1:
             scaled_attention = tf.transpose(scaled_attention,
@@ -2115,7 +2177,7 @@ class TFProcess:
 
         return out, activations
 
-    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, name: str, training: bool):
+    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, name: str, training: bool, layer_idx = 0):
         # DeepNorm
         alpha = tf.cast(tf.math.pow(
             2. * self.encoder_layers, -0.25), self.model_dtype)
@@ -2130,7 +2192,7 @@ class TFProcess:
 
         # multihead attention
         attn_output, attn_wts, activations_mha = self.mha(
-            inputs, emb_size, d_model, num_heads, xavier_norm, name=name + "/mha")
+            inputs, emb_size, d_model, num_heads, xavier_norm, name=name + "/mha", layer_idx=layer_idx)
 
         activations.update(activations_mha)
 
@@ -2247,7 +2309,7 @@ class TFProcess:
         for i in range(self.encoder_layers):
             flow, attn_wts_l, activations_l = self.encoder_layer(flow, self.embedding_size, self.encoder_d_model,
                                                   self.encoder_heads, self.encoder_dff,
-                                                  name=name+"encoder_{}".format(i + 1), training=True)
+                                                  name=name+"encoder_{}".format(i + 1), training=True, layer_idx = i)
 
             attn_wts.append(attn_wts_l)
             activations.update(activations_l)

@@ -122,6 +122,19 @@ class Net:
         if self.pb.min_version.minor < LC0_MINOR_WITH_MULTIHEAD:
             self.pb.min_version.minor = LC0_MINOR_WITH_MULTIHEAD
 
+    # --- ADDED FOR CHESSFORMER MASKS ---
+    def set_attention_masks(self, mask_rules):
+        del self.pb.format.network_format.attention_masks[:]
+        
+        if mask_rules:
+            for rule in mask_rules:
+                mask_msg = self.pb.format.network_format.attention_masks.add()
+                mask_msg.piece_type = rule['piece']
+                mask_msg.head_indices.extend(rule['heads'])
+                
+                if rule.get('layers') != "all":
+                    mask_msg.layer_indices.extend(rule['layers'])
+
     def activation(self, name):
         if name == "relu":
             return pb.NetworkFormat.ACTIVATION_RELU
