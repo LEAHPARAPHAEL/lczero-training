@@ -1,0 +1,8 @@
+--extra-index-url https://pypi.nvidia.com
+
+tensorflow[and-cuda]>=2.18
+numpy
+protobuf
+pyyaml
+rich
+tf-models-official
