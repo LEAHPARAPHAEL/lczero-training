@@ -67,7 +67,6 @@ training:
         value_st_cat: 0.1
         moves_left: 1.0
         reg: 1.0
-        future: 0.1
     path: '/home/raph/leela/networks/'
 
     optimizer: nadam # sgd/nadam/rmsprop/adabelief/adam

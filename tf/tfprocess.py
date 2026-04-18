@@ -512,27 +512,7 @@ class TFProcess:
             self.model_dtype = tf.float16
         else:
             raise ValueError("Unknown precision: {}".format(precision))
-        
-        # --- CHESSFORMER ATTENTION MASKS (PER LAYER) ---
-        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
-        num_layers = self.blocks # Assuming self.blocks holds the number of encoder layers
-        
-        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
-        
-        for rule in self.attention_masks_cfg:
-            piece = rule['piece']
-            heads = rule['heads']
-            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
-            
-            piece_mask = make_piece_pattern_mask(piece)
-            for l in layers:
-                if l < num_layers:
-                    for h in heads:
-                        if h < self.encoder_heads:
-                            mha_mask_np[l, 0, h, :, :] = piece_mask
-                            
-        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
-        # -----------------------------------------------
+    
 
         # Scale the loss to prevent gradient underflow
         self.loss_scale = 1 if self.model_dtype == tf.float32 else loss_scale
@@ -694,6 +674,26 @@ class TFProcess:
                                        name='global_step',
                                        trainable=False,
                                        dtype=tf.int64)
+
+        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
+        num_layers = self.encoder_layers 
+        
+        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
+        
+        for rule in self.attention_masks_cfg:
+            piece = rule['piece']
+            heads = rule['heads']
+            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
+            
+            piece_mask = make_piece_pattern_mask(piece)
+            for l in layers:
+                if l < num_layers:
+                    for h in heads:
+                        if h < self.encoder_heads:
+                            mha_mask_np[l, 0, h, :, :] = piece_mask
+                            
+        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
+        # -----------------------------------------------
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
         if self.strategy is not None:
