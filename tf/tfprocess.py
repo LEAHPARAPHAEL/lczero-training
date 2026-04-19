@@ -730,17 +730,21 @@ class TFProcess:
 
 
 
-
+        '''
         print(f"params: {self.model.count_params()}")
         smolgen_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "smol" in w.name])
         emb_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
         rpe_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "rpe" in w.name])
-
+        '''
+        print(f"params: {np.sum([np.prod(w.shape) for w in self.model.trainable_weights])}")
+        smolgen_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "smol" in w.name])
+        emb_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
+        rpe_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "rpe" in w.name])
 
         print(f"smolgen params: {smolgen_params}")
         print(f"emb preproc params: {emb_params}")
         print(f"rpe params: {rpe_params}")
-
+    
 
 
 
@@ -1934,10 +1938,17 @@ class TFProcess:
                 tf.summary.scalar(metric.long_name, metric.get(), step=steps)
             for w in self.model.weights:
                 tf.summary.histogram(w.name, w, step=steps)
+            '''
             params = self.model.count_params()
             smolgen_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "smol" in w.name])
             emb_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
             rpe_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "rpe" in w.name])
+            '''
+            params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights])
+            smolgen_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "smol" in w.name])
+            emb_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
+            rpe_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "rpe" in w.name])
+
 
             try:
                 import tensorflow_models as tfm
