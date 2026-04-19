@@ -24,13 +24,13 @@ training:
     swa_output: false  
     swa_max_n: 10
     swa_steps: 100
-    max_grad_norm: 10.0
+    max_grad_norm: 5.0
     batch_size: 512
     num_batch_splits: 1
     value_focus_min: 1.0
     value_focus_slope: 0.0
     lookahead_optimizer: false
-    renorm: true
+    renorm: false
     renorm_max_r: 1.0
     renorm_max_d: 0.0
     test_steps: 1_000
@@ -55,7 +55,7 @@ training:
     loss_weights:
         policy: 1.0
         policy_optimistic_st: 0.0
-        policy_soft: 8.0 # loss is much smaller at optimum
+        policy_soft: 1.0 # loss is much smaller at optimum
         policy_opponent: 0.00
         policy_next: 0.00
         value_winner: 1.0

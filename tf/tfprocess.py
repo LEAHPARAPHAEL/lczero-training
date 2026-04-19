@@ -1525,6 +1525,17 @@ class TFProcess:
         self.optimizer.apply_gradients(zip(grads,
                                            self.model.trainable_weights),
                                        experimental_aggregate_gradients=False)
+        # --- THE SAFETY VALVE ---
+        # AutoGraph will automatically convert this 'if' statement into a tf.cond
+        if tf.math.is_finite(grad_norm):
+            self.optimizer.apply_gradients(zip(grads,
+                                               self.model.trainable_weights),
+                                           experimental_aggregate_gradients=False)
+        else:
+            tf.print("========== CRITICAL WARNING ==========")
+            tf.print("NaN or Inf detected in gradients. Skipping weight update to prevent corruption.")
+            tf.print("======================================")
+        # ------------------------
         return grad_norm
 
     @tf.function()
