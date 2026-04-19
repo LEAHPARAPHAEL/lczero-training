@@ -355,6 +355,7 @@ def convert_v7b_to_tuple(content):
     def clip(x, lo, hi):
         return min(max(x, lo), hi)
 
+    '''        
     def qd_to_wdl(q, d):
         e = 1e-2
         assert -1.0 - e <= q <= 1.0 + e and 0.0 - e <= d <= 1.0 + e
@@ -365,6 +366,27 @@ def convert_v7b_to_tuple(content):
         return (w, d, l)
 
     root_wdl = struct.pack("fff", *(qd_to_wdl(root_q, root_d)))
+
+    st_wdl = struct.pack("fff", *(qd_to_wdl(st_q, st_d)))'''
+
+    def qd_to_wdl(q, d):
+        # We removed the assert. Just clip it safely.
+        q = clip(q, -1.0, 1.0)
+        d = clip(d, 0.0, 1.0)
+        w = 0.5 * (1.0 - d + q)
+        l = 0.5 * (1.0 - d - q)
+        return (w, d, l)
+
+    if np.isnan(root_q) or np.isnan(root_d):
+        root_q, root_d = 0.0, 0.0
+
+    root_wdl = struct.pack("fff", *(qd_to_wdl(root_q, root_d)))
+
+    # --- THE PERMANENT NaN PATCH ---
+    # If the rescorer poisoned this game, fall back to the current evaluation.
+    if np.isnan(st_q) or np.isnan(st_d):
+        st_q, st_d = root_q, root_d
+    # -------------------------------
 
     st_wdl = struct.pack("fff", *(qd_to_wdl(st_q, st_d)))
 

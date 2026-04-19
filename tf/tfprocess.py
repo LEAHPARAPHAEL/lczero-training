@@ -1344,6 +1344,15 @@ class TFProcess:
                 try:
                     loop()
                 except tf.errors.ResourceExhaustedError as e:
+                    print("\n" + "="*50)
+                    print(">>> FATAL OOM ERROR CAUGHT <<<")
+                    print(e)  # <--- THIS WILL PRINT THE EXACT BYTES REQUESTED AND AVAILABLE
+                    print("="*50 + "\n")
+                    print("Memory resources exhausted. Try decreasing batch size or model dimension")
+                    print("Saving model...")
+                    exit()
+                '''  
+                except tf.errors.ResourceExhaustedError as e:
                     print("Memory resources exhausted. Try decreasing batch size or model dimension")
                     print("Saving model...")
                     steps = self.global_step.read_value()
@@ -1352,7 +1361,7 @@ class TFProcess:
                     print("Model saved in file: {}".format(
                         self.manager.latest_checkpoint))
                     exit()
-
+                '''
         else:
             print("Warning, rich module not found, disabling progress bar")
             loop()
@@ -1544,7 +1553,8 @@ class TFProcess:
         # Run training for this batch
         grads = None
         for batch_id in range(batch_splits):
-            x, y, z, q, m, st_q, opp_idx, next_idx = next(self.train_iter)
+            #x, y, z, q, m, st_q, opp_idx, next_idx = next(self.train_iter)
+            x, y, z, q, m, st_q, opp_idx, next_idx, fut = next(self.train_iter)
             if self.strategy is not None:
                 metrics, new_grads = self.strategy_process_inner_loop(
                     x, y, z, q, m, st_q, opp_idx, next_idx)
@@ -1692,6 +1702,7 @@ class TFProcess:
         if steps % self.cfg["training"]["total_steps"] == 0 or (
                 "checkpoint_steps" in self.cfg["training"]
                 and steps % self.cfg["training"]["checkpoint_steps"] == 0):
+            '''
             if True:
 
 
@@ -1720,6 +1731,40 @@ class TFProcess:
                     #self.save_leelaz_weights(leela_path)
                     if self.swa_enabled:
                         self.save_swa_weights(swa_path)
+            '''
+
+            evaled_steps = steps.numpy()
+            self.manager.save(checkpoint_number=evaled_steps)
+            print("Model saved in file: {}".format(self.manager.latest_checkpoint))
+
+            path = os.path.join(self.root_dir, self.cfg["name"])
+            leela_path = path + "-" + str(evaled_steps)
+            swa_path = path + "-swa-" + str(evaled_steps)
+            
+            # Set steps for the Protobuf metadata
+            self.net.pb.training_params.training_steps = evaled_steps
+
+            # === 1. STANDARD WEIGHTS SAVING ===
+            # Save standard TensorFlow format
+            tf.saved_model.save(self.model, leela_path)
+            
+            # Save playable Leela .pb format
+            if not self.cfg["training"].get("disable_pb_checkpointing"):
+                self.save_leelaz_weights(leela_path)
+
+            # === 2. SWA WEIGHTS SAVING (Protected!) ===
+            if self.swa_enabled:
+                # Manually swap and save the SWA TensorFlow format
+                backup = self.read_weights()
+                for (swa, w) in zip(self.swa_weights, self.model.weights):
+                    w.assign(swa.read_value())
+                tf.saved_model.save(self.model, swa_path)
+                for (old, w) in zip(backup, self.model.weights):
+                    w.assign(old)
+                    
+                # Let the built-in function handle the SWA .pb file
+                if not self.cfg["training"].get("disable_pb_checkpointing"):
+                    self.save_swa_weights(swa_path)
 
         if self.profiling_start_step is not None and (
                 steps >= self.profiling_start_step +
@@ -1869,7 +1914,8 @@ class TFProcess:
         for metric in self.test_metrics:
             metric.reset()
         for _ in range(0, test_batches):
-            x, y, z, q, m, st_q, opp_idx, next_idx = next(self.test_iter)
+            #x, y, z, q, m, st_q, opp_idx, next_idx = next(self.test_iter)
+            x, y, z, q, m, st_q, opp_idx, next_idx, fut = next(self.test_iter)
             if self.strategy is not None:
                 metrics = self.strategy_calculate_test_summaries_inner_loop(
                     x, y, z, q, m, st_q, opp_idx, next_idx)

@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "8x256-256_no_mask"
+name: "4x128-128_no_mask"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -25,7 +25,7 @@ training:
     swa_max_n: 10
     swa_steps: 100
     max_grad_norm: 10.0
-    batch_size: 512
+    batch_size: 256
     num_batch_splits: 1
     value_focus_min: 1.0
     value_focus_slope: 0.0
@@ -41,7 +41,7 @@ training:
     num_test_positions: 200_507
     train_avg_report_steps: 1_000
     total_steps: 100_000
-    checkpoint_steps: 10_000
+    checkpoint_steps: 5_000
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true
@@ -81,17 +81,17 @@ training:
 model:
 
     # Dimension parameters
-    embedding_size: 256
-    policy_embedding_size: 256
+    embedding_size: 128
+    policy_embedding_size: 128
     value_embedding_size: 32
     moves_left_embedding_size: 32
-    encoder_layers: 8                  # number of intermediate attention layers in the policy head
-    encoder_heads: 8                # number of attention heads in encoder layers, emb // (32 or 64) recommended
+    encoder_layers: 4                   # number of intermediate attention layers in the policy head
+    encoder_heads: 2                 # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
-    encoder_d_model: 256                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
-    encoder_dff: 256                    # size of the expansion layer in encoder layer ffn
-    policy_d_model: 256                  # size of the query and key vectors in final attention layer
-    policy_d_aux: 256                     # size of the query and key vectors for auxiliary layers
+    encoder_d_model: 128                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
+    encoder_dff: 128                    # size of the expansion layer in encoder layer ffn
+    policy_d_model: 128                  # size of the query and key vectors in final attention layer
+    policy_d_aux: 128                     # size of the query and key vectors for auxiliary layers
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 
