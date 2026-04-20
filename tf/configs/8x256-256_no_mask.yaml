@@ -46,16 +46,14 @@ training:
     warmup_steps: 1_000
     mask_legal_moves: true
     lr_values: 
-        - 0.001
         - 0.000316
         - 0.0001
     lr_boundaries:
         - 80_000
-        - 90_000
     loss_weights:
         policy: 1.0
         policy_optimistic_st: 0.0
-        policy_soft: 1.0 # loss is much smaller at optimum
+        policy_soft: 8.0 # loss is much smaller at optimum
         policy_opponent: 0.00
         policy_next: 0.00
         value_winner: 1.0
@@ -68,11 +66,13 @@ training:
         moves_left: 1.0
         reg: 1.0
     path: '/home/raph/leela/networks/'
+    logs_path : '/home/raph/leela/logs/'
 
     optimizer: nadam # sgd/nadam/rmsprop/adabelief/adam
     beta_1: 0.9 
     beta_2: 0.98 
-    epsilon: 0.00000001 # 1e-7
+    #epsilon: 0.00000001 # 1e-7
+    epsilon: 0.00001
     sparse: false
 
     return_attn_wts: false

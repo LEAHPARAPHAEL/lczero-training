@@ -377,15 +377,15 @@ def convert_v7b_to_tuple(content):
         l = 0.5 * (1.0 - d - q)
         return (w, d, l)
 
-    if np.isnan(root_q) or np.isnan(root_d):
-        root_q, root_d = 0.0, 0.0
+    #if np.isnan(root_q) or np.isnan(root_d):
+    #    root_q, root_d = 0.0, 0.0
 
     root_wdl = struct.pack("fff", *(qd_to_wdl(root_q, root_d)))
 
     # --- THE PERMANENT NaN PATCH ---
     # If the rescorer poisoned this game, fall back to the current evaluation.
-    if np.isnan(st_q) or np.isnan(st_d):
-        st_q, st_d = root_q, root_d
+    #if np.isnan(st_q) or np.isnan(st_d):
+    #    st_q, st_d = root_q, root_d
     # -------------------------------
 
     st_wdl = struct.pack("fff", *(qd_to_wdl(st_q, st_d)))
@@ -526,6 +526,17 @@ class ChunkParserInner:
                 pol_kld = struct.unpack("f", record[8348:8352])[0]
 
                 # if orig_q is NaN or pol_kld is 0, accept, else accept based on diff focus
+                root_q = struct.unpack("f", record[8280:8284])[0]
+                root_d = struct.unpack("f", record[8288:8292])[0]
+                plies_left = struct.unpack("f", record[8304:8308])[0]
+                st_q = struct.unpack("f", record[8352:8356])[0]
+                st_d = struct.unpack("f", record[8356:8360])[0]
+
+                # If any of these training targets are corrupted, drop the position instantly
+                if (np.isnan(plies_left) or 
+                    np.isnan(st_q) or np.isnan(st_d) or 
+                    np.isnan(root_q) or np.isnan(root_d)):
+                    continue
 
                 try:
                     if self.pc_min is not None or self.pc_max is not None:

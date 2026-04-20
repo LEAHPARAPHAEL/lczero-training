@@ -3,11 +3,15 @@ import struct
 import math
 import glob
 import os
+import numpy as np
+from tqdm import tqdm
 
 V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
 v7_struct = struct.Struct(V7_STRUCT_STRING)
 record_size = v7_struct.size
 
+
+'''
 def find_out_of_bounds(file_path, max_records=100):
     print(f"\n--- Scanning {os.path.basename(file_path)} ---")
     with gzip.open(file_path, "rb") as f:
@@ -64,3 +68,119 @@ if __name__ == '__main__':
         find_out_of_bounds(files[4], max_records=10000)
     else:
         print(f"Could not find any .gz files in {train_dir}")
+'''
+
+
+# Exact struct definition extracted from your chunkparser.py
+V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
+v7_struct = struct.Struct(V7_STRUCT_STRING)
+
+# Exact struct definition extracted from your chunkparser.py
+
+def verify_v7_dataset(directories):
+    # Initialize counters for the v7 format
+    nan_counts = {
+        'policy': 0,
+        'plies_left': 0,
+        'root_wdl': 0,
+        'st_wdl': 0,
+        'result_wdl': 0,
+        'total_games': 0
+    }
+
+    # Find all chunk files
+    filepaths = []
+    for d in directories:
+        filepaths.extend(glob.glob(os.path.expanduser(d + '/*.gz')))
+    
+    print(f"Found {len(filepaths)} v7 chunk files to verify...")
+    if not filepaths:
+        return nan_counts
+
+    record_size = v7_struct.size 
+
+    # Wrap the filepaths in tqdm for the progress bar
+    pbar = tqdm(filepaths, desc="Verifying Chunks", unit="file")
+
+    for filepath in pbar:
+        try:
+            with gzip.open(filepath, 'rb') as f:
+                while True:
+                    content = f.read(record_size)
+                    if not content or len(content) < record_size:
+                        break # EOF or partial record
+                    
+                    nan_counts['total_games'] += 1
+
+                    # 1. Unpack exactly using the v7 struct
+                    unpacked = v7_struct.unpack(content)
+                    
+                    # 2. Extract only the relevant fields
+                    probs_bytes = unpacked[2]  # 7432s
+                    root_q     = unpacked[12]
+                    root_d     = unpacked[14]
+                    plies_left = unpacked[18]
+                    result_q   = unpacked[19]
+                    result_d   = unpacked[20]
+                    st_q       = unpacked[31]
+                    st_d       = unpacked[32]
+
+                    # 3. VERIFICATION CHECKS
+                    
+                    # Check Policy
+                    probs_array = np.frombuffer(probs_bytes, dtype=np.float32)
+                    if np.isnan(probs_array).any():
+                        nan_counts['policy'] += 1
+
+                    # Check Moves Left
+                    if np.isnan(plies_left):
+                        nan_counts['plies_left'] += 1
+
+                    # Check Root WDL 
+                    if np.isnan(root_q) or np.isnan(root_d):
+                        nan_counts['root_wdl'] += 1
+
+                    # Check ST WDL 
+                    if np.isnan(st_q) or np.isnan(st_d):
+                        nan_counts['st_wdl'] += 1
+
+                    # Check Game Result 
+                    if np.isnan(result_q) or np.isnan(result_d):
+                        nan_counts['result_wdl'] += 1
+                        
+        except Exception as e:
+            # Use tqdm.write so error messages don't break the progress bar formatting
+            tqdm.write(f"Error reading {filepath}: {e}")
+            continue
+
+        # Update the progress bar's right-side text after every file
+        # This keeps the loop lightning fast while giving you live stats
+        total_errors = sum(v for k, v in nan_counts.items() if k != 'total_games')
+        pbar.set_postfix({
+            'Games': f"{nan_counts['total_games']:,}",
+            'Errors': f"{total_errors:,}"
+        })
+
+    return nan_counts
+
+# Run the routine
+if __name__ == "__main__":
+    directories_to_check = [
+        '~/leela/data/train/*/',
+        '~/leela/data/test/*/'
+    ]
+    
+    print("Starting V7 Data Verification...")
+    results = verify_v7_dataset(directories_to_check)
+    
+    print("\n" + "="*40)
+    print("VERIFICATION RESULTS")
+    print("="*40)
+    print(f"Total Games Parsed: {results['total_games']:,}")
+    print("-" * 40)
+    print(f"Policy Corruptions:      {results['policy']:,}")
+    print(f"Moves Left Corruptions:  {results['plies_left']:,}")
+    print(f"Root WDL Corruptions:    {results['root_wdl']:,}")
+    print(f"ST WDL Corruptions:      {results['st_wdl']:,}")
+    print(f"Result WDL Corruptions:  {results['result_wdl']:,}")
+    print("="*40)

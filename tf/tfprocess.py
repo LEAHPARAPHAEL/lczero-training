@@ -430,7 +430,21 @@ class TFProcess:
         self.quantize_channels = self.cfg["model"].get("quantize_channels", False)
         self.rep_quant = self.cfg["model"].get("rep_quant", False)
 
+        # --- PLAIN TEXT LOGGER SETUP ---
+        # Get the model name from your YAML, default to 'model' if missing
+        model_name = self.cfg.get('name', 'model')
+        
+        # Save it in the same directory as your network weights
+        log_dir = self.cfg['training'].get('logs_path', './logs/')
+        os.makedirs(log_dir, exist_ok=True)
+        self.txt_log_file = os.path.join(log_dir, f"{model_name}.txt")
 
+        # Write a header every time the script is started/resumed
+        with open(self.txt_log_file, "a") as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f" RUN STARTED/RESUMED: {model_name}\n")
+            f.write(f"{'='*60}\n")
+        # ------------------------------
 
 
         # Network structure
@@ -1207,6 +1221,11 @@ class TFProcess:
             keep_checkpoint_every_n_hours=24,
             checkpoint_name=self.cfg["name"])
 
+    def log_metrics_to_file(self, message):
+        """Appends a string to the plain text log file."""
+        with open(self.txt_log_file, "a") as f:
+            f.write(message + "\n")
+
     # False to True is a hack to keep net to model working with atnb
     def replace_weights(self, proto_filename: str, ignore_errors: bool = False):
         print(f"Restoring from {proto_filename}")
@@ -1522,20 +1541,15 @@ class TFProcess:
         max_grad_norm = self.cfg['training'].get(
             'max_grad_norm', 10000.0) * effective_batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+
+        if not tf.math.is_finite(grad_norm):
+            tf.print("========== CRITICAL WARNING ==========")
+            tf.print("NaN or Inf detected in gradients. Applying weight update anyway.")
+            tf.print("======================================")
+
         self.optimizer.apply_gradients(zip(grads,
                                            self.model.trainable_weights),
                                        experimental_aggregate_gradients=False)
-        # --- THE SAFETY VALVE ---
-        # AutoGraph will automatically convert this 'if' statement into a tf.cond
-        if tf.math.is_finite(grad_norm):
-            self.optimizer.apply_gradients(zip(grads,
-                                               self.model.trainable_weights),
-                                           experimental_aggregate_gradients=False)
-        else:
-            tf.print("========== CRITICAL WARNING ==========")
-            tf.print("NaN or Inf detected in gradients. Skipping weight update to prevent corruption.")
-            tf.print("======================================")
-        # ------------------------
         return grad_norm
 
     @tf.function()
@@ -1623,16 +1637,18 @@ class TFProcess:
                 steps_elapsed = steps - self.last_steps
                 speed = batch_size * (tf.cast(steps_elapsed, tf.float32) /
                                       elapsed)
-            print("step {}, lr={:g}".format(steps, self.lr), end="")
+            print("\n")
+            print("-"*60)
+            print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
             for metric in self.train_metrics:
                 try:
-                    print(" {}={:g}{}".format(metric.short_name, metric.get(),
+                    print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
                                               metric.suffix),
-                          end="")
+                          end="\n")
                 except:
                     print("failure to print metric", metric.short_name,
                           metric.get(), metric.suffix)
-            print(" ({:g} pos/s)".format(speed))
+            print(" > ({:g} pos/s)".format(speed))
 
             after_weights = self.read_weights()
             with self.train_writer.as_default():
@@ -1976,11 +1992,16 @@ class TFProcess:
 
         self.test_writer.flush()
 
-        print("step {},".format(steps), end="")
+        print("\n")
+        print("-"*60)
+        print("Test step {}".format(steps), end="\n")
+        self.log_metrics_to_file(f"Step {steps}\n")
         for metric in self.test_metrics:
-            print(" {}={:g}{}".format(metric.short_name, metric.get(),
+            print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
                                       metric.suffix),
-                  end="")
+                  end="\n")
+
+            self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
         print()
 
     def calculate_swa_validations(self, steps: int):
@@ -2463,6 +2484,7 @@ class TFProcess:
         def future_head(name):
             # hack so checkpointing works
             return tf.keras.layers.Dense(2, name=name+"/attention/wq")(policy_tokens)
+            #return tf.keras.layers.Dense(2, name=name+"/attention/wq", dtype = "float32")(policy_tokens)
 
 
         aux_depth = self.cfg['model'].get('policy_d_aux', self.policy_d_model)
@@ -2479,6 +2501,7 @@ class TFProcess:
         policy_next = future_head(name="policy/next") if self.cfg['model'].get(
             'policy_next', False) else None
 
+        
         def value_head(name, wdl=True, use_err=True, use_cat=True):
             embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
                                                  activation=self.DEFAULT_ACTIVATION,
@@ -2515,6 +2538,48 @@ class TFProcess:
                 value_cat = None
 
             return value, value_err, value_cat
+        
+        '''
+        def value_head(name, wdl=True, use_err=True, use_cat=True):
+            embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
+                                                 activation=self.DEFAULT_ACTIVATION,
+                                                 name=name+"/embedding")(flow)
+
+            h_val_flat = tf.keras.layers.Flatten()(embedded_val)
+            h_fc2 = tf.keras.layers.Dense(128,
+                                          kernel_initializer="glorot_normal",
+                                          activation=self.DEFAULT_ACTIVATION,
+                                          name=name+"/dense1")(h_val_flat)
+
+            # WDL head
+            if wdl:
+                value = tf.keras.layers.Dense(3,
+                                              kernel_initializer="glorot_normal",
+                                              name=name+"/dense2",
+                                              dtype="float32")(h_fc2)
+            else:
+                value = tf.keras.layers.Dense(1,
+                                              kernel_initializer="glorot_normal",
+                                              activation="tanh",
+                                              name=name+"/dense2",
+                                              dtype="float32")(h_fc2)
+
+            if use_err:
+                value_err = tf.keras.layers.Dense(
+                    1, kernel_initializer="glorot_normal", name=name+"/dense_error", activation="sigmoid",
+                    dtype="float32")(h_fc2)
+            else:
+                value_err = None
+
+            if use_cat and self.categorical_value_buckets:
+                value_cat = tf.keras.layers.Dense(
+                    self.categorical_value_buckets, kernel_initializer="glorot_normal", name=name+"/dense_cat",
+                    dtype="float32")(h_fc2)
+            else:
+                value_cat = None
+
+            return value, value_err, value_cat
+        '''
 
         value_winner, value_winner_err, value_winner_cat = value_head(
             name="value/winner", wdl=self.wdl, use_err=False, use_cat=False)
@@ -2536,13 +2601,21 @@ class TFProcess:
                 kernel_initializer="glorot_normal",
                 activation=self.DEFAULT_ACTIVATION,
                 name=name+"moves_left/dense1")(h_mov_flat)
+        
+
             
-
-
             moves_left = tf.keras.layers.Dense(1,
                                                kernel_initializer="glorot_normal",
                                                activation="relu",
                                                name=name+"moves_left/dense2")(h_fc4)
+            
+            '''
+            moves_left = tf.keras.layers.Dense(1,
+                                               kernel_initializer="glorot_normal",
+                                               activation="relu",
+                                               name=name+"moves_left/dense2",
+                                               dtype="float32")(h_fc4)
+            '''
         else:
             moves_left = None
 
