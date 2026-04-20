@@ -57,6 +57,8 @@ def make_piece_pattern_mask(piece_type):
                 valid = True
             elif piece_type == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
                 valid = True
+            elif piece_type == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
+                valid = True
                 
             if not valid:
                 mask[i, j] = -10000.0
@@ -824,6 +826,7 @@ class TFProcess:
             self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
                 self.optimizer, dynamic=True)
 
+        '''
         def split_value_buckets(x, n_buckets=None, lo=-1, hi=1):
             if n_buckets is None:
                 n_buckets = self.categorical_value_buckets
@@ -837,6 +840,39 @@ class TFProcess:
             target = split_value_buckets(target)
             loss = tf.nn.softmax_cross_entropy_with_logits(
                 labels=tf.stop_gradient(target), logits=output)
+            return tf.reduce_mean(loss)
+        '''
+        def split_value_buckets(x, n_buckets=None, lo=-1.0, hi=1.0):
+            if n_buckets is None:
+                n_buckets = self.categorical_value_buckets
+            
+            # --- FP32 CAST ---
+            # Cast immediately to float32 so the boundary math doesn't underflow
+            x = tf.cast(x, tf.float32)
+            
+            # Use a safe float32 epsilon instead of 1e-9
+            epsilon = 1e-5
+            x = tf.clip_by_value(x, lo, hi - epsilon)
+            
+            x = (x - lo) / (hi - lo) * n_buckets
+            x = tf.cast(x, tf.int32)
+            return tf.one_hot(x, n_buckets, dtype=tf.float32)
+
+        def categorical_value_loss(target, output):
+            target = convert_val_to_scalar(target, softmax=False)
+            target = split_value_buckets(target)
+            
+            # --- FP32 CAST & CLIPPING ---
+            # Ensure logits are float32 before cross-entropy to prevent exp() overflow
+            output = tf.clip_by_value(output, -20.0, 20.0)
+            
+            loss = tf.nn.softmax_cross_entropy_with_logits(
+                labels=tf.stop_gradient(target), logits=output)
+                
+            # --- THE SAFETY MASK ---
+            # If an anomaly still creates an Inf/NaN, mask it to 0.0 to save the batch
+            loss = tf.where(tf.math.is_finite(loss), loss, tf.zeros_like(loss))
+            
             return tf.reduce_mean(loss)
 
         def correct_policy(target, output, temperature=1.0):
@@ -2483,8 +2519,8 @@ class TFProcess:
 
         def future_head(name):
             # hack so checkpointing works
-            return tf.keras.layers.Dense(2, name=name+"/attention/wq")(policy_tokens)
-            #return tf.keras.layers.Dense(2, name=name+"/attention/wq", dtype = "float32")(policy_tokens)
+            #return tf.keras.layers.Dense(2, name=name+"/attention/wq")(policy_tokens)
+            return tf.keras.layers.Dense(2, name=name+"/attention/wq", dtype = "float32")(policy_tokens)
 
 
         aux_depth = self.cfg['model'].get('policy_d_aux', self.policy_d_model)
@@ -2501,7 +2537,7 @@ class TFProcess:
         policy_next = future_head(name="policy/next") if self.cfg['model'].get(
             'policy_next', False) else None
 
-        
+        '''
         def value_head(name, wdl=True, use_err=True, use_cat=True):
             embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
                                                  activation=self.DEFAULT_ACTIVATION,
@@ -2538,8 +2574,9 @@ class TFProcess:
                 value_cat = None
 
             return value, value_err, value_cat
-        
         '''
+        
+        
         def value_head(name, wdl=True, use_err=True, use_cat=True):
             embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
                                                  activation=self.DEFAULT_ACTIVATION,
@@ -2579,7 +2616,7 @@ class TFProcess:
                 value_cat = None
 
             return value, value_err, value_cat
-        '''
+        
 
         value_winner, value_winner_err, value_winner_cat = value_head(
             name="value/winner", wdl=self.wdl, use_err=False, use_cat=False)
@@ -2603,19 +2640,19 @@ class TFProcess:
                 name=name+"moves_left/dense1")(h_mov_flat)
         
 
-            
+            '''
             moves_left = tf.keras.layers.Dense(1,
                                                kernel_initializer="glorot_normal",
                                                activation="relu",
                                                name=name+"moves_left/dense2")(h_fc4)
-            
             '''
+            
             moves_left = tf.keras.layers.Dense(1,
                                                kernel_initializer="glorot_normal",
                                                activation="relu",
                                                name=name+"moves_left/dense2",
                                                dtype="float32")(h_fc4)
-            '''
+            
         else:
             moves_left = None
 
