@@ -2031,7 +2031,7 @@ class TFProcess:
         print("\n")
         print("-"*60)
         print("Test step {}".format(steps), end="\n")
-        self.log_metrics_to_file(f"Step {steps}\n")
+        self.log_metrics_to_file(f"\nStep {steps}")
         for metric in self.test_metrics:
             print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
                                       metric.suffix),
