@@ -483,7 +483,8 @@ class TFProcess:
         self.beta_1 = self.cfg['training'].get('beta_1', 0.9)
         self.beta_2 = self.cfg['training'].get('beta_2', 0.999)
         self.epsilon = self.cfg['training'].get('epsilon', 1e-7)
-        self.weight_decay = self.cfg["training"].get("weight_decay", 0.0005)
+        #self.weight_decay = self.cfg["training"].get("weight_decay", 0.0005)
+        self.weight_decay = self.cfg["training"].get("weight_decay", 0.0)
         self.active_lr = tf.Variable(0.000001, trainable=False)
         # All 'new' (TF 2.10 or newer non-legacy) optimizers must have learning_rate updated manually.
         self.update_lr_manually = True
