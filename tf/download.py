@@ -167,7 +167,7 @@ def download_and_split_smart(index_url, base_dir, target_games, max_gb, train_ra
 # --- Usage Example ---
 if __name__ == "__main__":
     URL = "https://data.lczero.org/files/training_data/test91/"
-    DESTINATION_FOLDER = "~/leela/data"
+    DESTINATION_FOLDER = "/home/raph/leela/data"
     
     TARGET_GAMES = 1000000 
     MAX_DISK_SPACE_GB = 40  

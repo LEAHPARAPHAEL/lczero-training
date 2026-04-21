@@ -451,7 +451,7 @@ class ChunkParserInner:
                 plies_left = struct.unpack('f', record[8304:8308])[0]
                 
                 # If either value is NaN, or out of mathematical bounds, silently drop the corrupted record
-                if np.isnan(best_q) or np.isnan(best_d) or np.isnane(plies_left):
+                if np.isnan(best_q) or np.isnan(best_d) or np.isnan(plies_left):
                     continue
                 # -----------------------
 
