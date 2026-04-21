@@ -30,6 +30,40 @@ import operator
 
 from net import Net
 
+def make_piece_pattern_mask(piece_type):
+    # Use -10000.0 instead of -1e9 to prevent NaN overflows in mixed float16 precision
+    mask = np.zeros((64, 64), dtype=float)
+    for i in range(64):
+        r1, c1 = divmod(i, 8)
+        for j in range(64):
+            r2, c2 = divmod(j, 8)
+            dr = abs(r1 - r2)
+            dc = abs(c1 - c2)
+            
+            valid = False
+            # A square should always be able to attend to itself
+            if i == j:
+                valid = True
+            elif piece_type == 'rook' and (dr == 0 or dc == 0):
+                valid = True
+            elif piece_type == 'bishop' and (dr == dc):
+                valid = True
+            elif piece_type == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+                valid = True
+            elif piece_type == 'queen' and (dr == 0 or dc == 0 or dr == dc):
+                valid = True
+            elif piece_type == 'king' and (dr <= 1 and dc <= 1):
+                valid = True
+            elif piece_type == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
+                valid = True
+            elif piece_type == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
+                valid = True
+                
+            if not valid:
+                mask[i, j] = -10000.0
+    return mask
+
+
 
 def square_relu(x):
     return tf.nn.relu(x)**2
@@ -152,6 +186,22 @@ class TFProcess:
         self.root_dir = os.path.join(self.cfg['training']['path'],
                                      self.cfg['name'])
 
+        # --- PLAIN TEXT LOGGER SETUP ---
+        # Get the model name from your YAML, default to 'model' if missing
+        model_name = self.cfg.get('name', 'model')
+        
+        # Save it in the same directory as your network weights
+        log_dir = self.cfg['training'].get('logs_path', './logs/')
+        os.makedirs(log_dir, exist_ok=True)
+        self.txt_log_file = os.path.join(log_dir, f"{model_name}.txt")
+
+        # Write a header every time the script is started/resumed
+        with open(self.txt_log_file, "a") as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f" RUN STARTED/RESUMED: {model_name}\n")
+            f.write(f"{'='*60}\n")
+        # ------------------------------
+
         # Network structure
         self.RESIDUAL_FILTERS = self.cfg['model'].get('filters', 0)
         self.RESIDUAL_BLOCKS = self.cfg['model'].get('residual_blocks', 0)
@@ -222,7 +272,7 @@ class TFProcess:
         # Scale the loss to prevent gradient underflow
         self.loss_scale = 1 if self.model_dtype == tf.float32 else loss_scale
 
-        policy_head = self.cfg['model'].get('policy', 'convolution')
+        policy_head = self.cfg['model'].get('policy', 'attention')
         value_head = self.cfg['model'].get('value', 'wdl')
         moves_left_head = self.cfg['model'].get('moves_left', 'v1')
         input_mode = self.cfg['model'].get('input_type', 'classic')
@@ -352,6 +402,26 @@ class TFProcess:
                                        trainable=False,
                                        dtype=tf.int64)
 
+        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
+        num_layers = self.encoder_layers 
+        
+        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
+        
+        for rule in self.attention_masks_cfg:
+            piece = rule['piece']
+            heads = rule['heads']
+            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
+            
+            piece_mask = make_piece_pattern_mask(piece)
+            for l in layers:
+                if l < num_layers:
+                    for h in heads:
+                        if h < self.encoder_heads:
+                            mha_mask_np[l, 0, h, :, :] = piece_mask
+                            
+        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
+        # -----------------------------------------------
+
     def init(self, train_dataset, test_dataset, validation_dataset=None):
         if self.strategy is not None:
             self.train_dataset = self.strategy.experimental_distribute_dataset(
@@ -392,6 +462,7 @@ class TFProcess:
                 tf.Variable(w, trainable=False) for w in self.model.weights
             ]
 
+        '''
         self.active_lr = tf.Variable(0.01, trainable=False)
         # All 'new' (TF 2.10 or newer non-legacy) optimizers must have learning_rate updated manually.
         self.update_lr_manually = False
@@ -422,6 +493,51 @@ class TFProcess:
         if self.cfg['training'].get('lookahead_optimizer'):
             import tensorflow_addons as tfa
             self.optimizer = tfa.optimizers.Lookahead(self.optimizer)
+        '''
+
+        self.optimizer_name = self.cfg['training'].get('optimizer', 'sgd').lower()
+        self.beta_1 = self.cfg['training'].get('beta_1', 0.9)
+        self.beta_2 = self.cfg['training'].get('beta_2', 0.999)
+        self.epsilon = self.cfg['training'].get('epsilon', 1e-7)
+        self.weight_decay = self.cfg["training"].get("weight_decay", 0.0)
+        self.active_lr = tf.Variable(0.000001, trainable=False)
+        # All 'new' (TF 2.10 or newer non-legacy) optimizers must have learning_rate updated manually.
+        self.update_lr_manually = True
+        # Be sure not to set new_optimizer before TF 2.11, or unless you edit the code to specify a new optimizer explicitly.
+        if self.optimizer_name == "sgd":
+            if self.cfg['training'].get('new_optimizer'):
+                self.optimizer = tf.keras.optimizers.SGD(
+                    learning_rate=self.active_lr, momentum=0.9, nesterov=True)
+                self.update_lr_manually = True
+            else:
+                try:
+                    self.optimizer = tf.keras.optimizers.legacy.SGD(
+                        learning_rate=lambda: self.active_lr,
+                        momentum=0.9,
+                        nesterov=True)
+                except AttributeError:
+                    self.optimizer = tf.keras.optimizers.SGD(
+                        learning_rate=lambda: self.active_lr,
+                        momentum=0.9,
+                        nesterov=True)
+        elif self.optimizer_name == "rmsprop":
+            self.optimizer = tf.keras.optimizers.RMSprop(
+                learning_rate=self.active_lr, rho=0.9, momentum=0.0, epsilon=1e-07, centered=True)
+        elif self.optimizer_name == "nadam":
+            self.optimizer = tf.keras.optimizers.Nadam(
+                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon)
+        else:
+            raise ValueError("Unknown optimizer: " + self.optimizer_name)
+
+        self.orig_optimizer = self.optimizer
+        try:
+            self.aggregator = self.orig_optimizer.aggregate_gradients
+        except AttributeError:
+            self.aggregator = self.orig_optimizer.gradient_aggregator
+        if self.loss_scale != 1:
+            self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
+                self.optimizer, dynamic=True)
+
 
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
@@ -583,9 +699,7 @@ class TFProcess:
             Metric('P', 'Policy Loss'),
             Metric('V', 'Value Loss'),
             Metric('ML', 'Moves Left Loss'),
-            Metric(
-                'V MSE', 'MSE Loss'
-            ),  # Long name here doesn't mention value for backwards compatibility reasons.
+            Metric('V MSE', 'MSE Loss'),  # Long name here doesn't mention value for backwards compatibility reasons.
             Metric('P Acc', 'Policy Accuracy', suffix='%'),
             Metric('V Acc', 'Value Accuracy', suffix='%'),
             Metric('ML Mean', 'Moves Left Mean Error'),
@@ -627,6 +741,11 @@ class TFProcess:
             max_to_keep=50,
             keep_checkpoint_every_n_hours=24,
             checkpoint_name=self.cfg['name'])
+
+    def log_metrics_to_file(self, message):
+        """Appends a string to the plain text log file."""
+        with open(self.txt_log_file, "a") as f:
+            f.write(message + "\n")
 
     def replace_weights(self, proto_filename, ignore_errors=False):
         self.net.parse_proto(proto_filename)
@@ -885,12 +1004,20 @@ class TFProcess:
                 steps_elapsed = steps - self.last_steps
                 speed = batch_size * (tf.cast(steps_elapsed, tf.float32) /
                                       elapsed)
-            print("step {}, lr={:g}".format(steps, self.lr), end='')
+
+            print("\n")
+            print("-"*60)
+            print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
+            self.log_metrics_to_file(f"\Train step {steps} : ")
             for metric in self.train_metrics:
-                print(" {}={:g}{}".format(metric.short_name, metric.get(),
-                                          metric.suffix),
-                      end='')
-            print(" ({:g} pos/s)".format(speed))
+                print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
+                                        metric.suffix),
+                    end="\n")
+
+                self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
+
+            print(" > ({:g} pos/s)".format(speed))
+
 
             after_weights = self.read_weights()
             with self.train_writer.as_default():
@@ -1072,12 +1199,17 @@ class TFProcess:
                 tf.summary.histogram(w.name, w, step=steps)
         self.test_writer.flush()
 
-        print("step {},".format(steps), end='')
+        print("\n")
+        print("-"*60)
+        print("Test step {}".format(steps), end="\n")
+        self.log_metrics_to_file(f"\nTest step {steps} :")
         for metric in self.test_metrics:
-            print(" {}={:g}{}".format(metric.short_name, metric.get(),
+            print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
                                       metric.suffix),
-                  end='')
-        print()
+                  end="\n")
+
+            self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
+
 
     def calculate_swa_validations(self, steps):
         backup = self.read_weights()
@@ -1164,6 +1296,8 @@ class TFProcess:
         for weight in self.model.weights:
             numpy_weights.append([weight.name, weight.numpy()])
         self.net.fill_net_v2(numpy_weights)
+        if hasattr(self, 'attention_masks_cfg'):
+            self.net.set_attention_masks(self.attention_masks_cfg)
         self.net.save_proto(filename)
 
     def batch_norm(self, input, name, scale=False):
@@ -1266,13 +1400,19 @@ class TFProcess:
                                      k,
                                      v,
                                      name: str = None,
-                                     inputs=None):
+                                     inputs=None,
+                                     layer_idx = 0):
 
         # 0 h 64 d, 0 h d 64
         matmul_qk = tf.matmul(q, k, transpose_b=True)
         dk = tf.cast(tf.shape(k)[-1], self.model_dtype)
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
         heads = scaled_attention_logits.shape[1]
+
+        if hasattr(self, 'mha_mask'):
+            # Slice the mask for this specific layer
+            layer_mask = self.mha_mask[layer_idx, :, :heads, :, :]
+            scaled_attention_logits = scaled_attention_logits + layer_mask
 
         if self.use_smolgen:
             smolgen_weights = self.smolgen_weights(
@@ -1292,7 +1432,7 @@ class TFProcess:
     # multi-head attention in encoder blocks
 
     def mha(self, inputs, emb_size: int, d_model: int, num_heads: int,
-            initializer, name: str):
+            initializer, name: str, layer_idx = 0):
         assert d_model % num_heads == 0
         depth = d_model // num_heads
         # query, key, and value vectors for self-attention
@@ -1314,7 +1454,7 @@ class TFProcess:
         v = self.split_heads(v, batch_size, num_heads, depth)
 
         scaled_attention, attention_weights = self.scaled_dot_product_attention(
-            q, k, v, name=name, inputs=inputs)
+            q, k, v, name=name, inputs=inputs, layer_idx = layer_idx)
         if num_heads > 1:
             scaled_attention = tf.transpose(scaled_attention,
                                             perm=[0, 2, 1, 3])
@@ -1345,7 +1485,7 @@ class TFProcess:
         return out
 
     def encoder_layer(self, inputs, emb_size: int, d_model: int,
-                      num_heads: int, dff: int, name: str):
+                      num_heads: int, dff: int, name: str, layer_idx = 0):
         initializer = None
         if self.encoder_layers > 0:
             # DeepNorm
@@ -1365,7 +1505,8 @@ class TFProcess:
                                          d_model,
                                          num_heads,
                                          initializer,
-                                         name=name + "/mha")
+                                         name=name + "/mha",
+                                         layer_idx = layer_idx)
         # dropout for weight regularization
         attn_output = tf.keras.layers.Dropout(self.dropout_rate,
                                               name=name +
@@ -1463,7 +1604,8 @@ class TFProcess:
                                                   self.encoder_heads,
                                                   self.encoder_dff,
                                                   name='encoder_{}'.format(i +
-                                                                           1))
+                                                                           1),
+                                                  layer_idx = i)
             attn_wts.append(attn_wts_l)
         return flow, attn_wts
 

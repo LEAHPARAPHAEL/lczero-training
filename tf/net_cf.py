@@ -13,6 +13,7 @@ LC0_MINOR_WITH_INPUT_TYPE_4 = 26
 LC0_MINOR_WITH_INPUT_TYPE_5 = 27
 LC0_MINOR_WITH_MISH = 29
 LC0_MINOR_WITH_ATTN_BODY = 30
+LC0_MINOR_WITH_MULTIHEAD = 31
 LC0_PATCH = 0
 WEIGHTS_MAGIC = 0x1c0
 
@@ -20,7 +21,11 @@ WEIGHTS_MAGIC = 0x1c0
 def nested_getattr(obj, attr):
     attributes = attr.split(".")
     for a in attributes:
-        obj = getattr(obj, a)
+        try:
+            obj = getattr(obj, a)
+        except Exception as e:
+            print("Error getting attribute {} in {}".format(a, attr))
+            raise e
     return obj
 
 
@@ -59,6 +64,9 @@ class Net:
         if net == pb.NetworkFormat.NETWORK_ATTENTIONBODY_WITH_HEADFORMAT \
                 and self.pb.min_version.minor < LC0_MINOR_WITH_ATTN_BODY:
             self.pb.min_version.minor = LC0_MINOR_WITH_ATTN_BODY
+        if net == pb.NetworkFormat.NETWORK_ATTENTIONBODY_WITH_MULTIHEADFORMAT \
+                and self.pb.min_version.minor < LC0_MINOR_WITH_MULTIHEAD:
+            self.pb.min_version.minor = LC0_MINOR_WITH_MULTIHEAD
 
     def set_policyformat(self, policy):
         self.pb.format.network_format.policy = policy
@@ -109,6 +117,12 @@ class Net:
             self.pb.min_version.minor = LC0_MINOR_WITH_ATTN_BODY
         return None
 
+    def set_input_embedding(self, embedding):
+        self.pb.format.network_format.input_embedding = embedding
+        if self.pb.min_version.minor < LC0_MINOR_WITH_MULTIHEAD:
+            self.pb.min_version.minor = LC0_MINOR_WITH_MULTIHEAD
+
+    # --- ADDED FOR CHESSFORMER MASKS ---
     def set_attention_masks(self, mask_rules):
         del self.pb.format.network_format.attention_masks[:]
         
@@ -142,19 +156,8 @@ class Net:
             return pb.NetworkFormat.ACTIVATION_DEFAULT
         else:
             return pb.NetworkFormat.ACTIVATION_NONE
-
-    def get_weight_amounts(self):
-        value_weights = 8
-        policy_weights = 6
-        head_weights = value_weights + policy_weights
-        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT:
-            # Batch norm gammas in head convolutions.
-            head_weights += 2
-        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT:
-            return {"input": 5, "residual": 14, "head": head_weights}
-        else:
-            return {"input": 4, "residual": 8, "head": head_weights}
-
+        
+        
     def fill_layer_v2(self, layer, params):
         """Normalize and populate 16bit layer in protobuf"""
         params = params.flatten().astype(np.float32)
@@ -185,31 +188,6 @@ class Net:
         params = np.round(params)
         layer.params = params.astype(np.uint16).tobytes()
 
-    def fill_conv_block(self, convblock, weights, gammas):
-        """Normalize and populate 16bit convblock in protobuf"""
-        if gammas:
-            self.fill_layer(convblock.bn_stddivs, weights)
-            self.fill_layer(convblock.bn_means, weights)
-            self.fill_layer(convblock.bn_betas, weights)
-            self.fill_layer(convblock.bn_gammas, weights)
-            self.fill_layer(convblock.weights, weights)
-        else:
-            self.fill_layer(convblock.bn_stddivs, weights)
-            self.fill_layer(convblock.bn_means, weights)
-            self.fill_layer(convblock.biases, weights)
-            self.fill_layer(convblock.weights, weights)
-
-    def fill_plain_conv(self, convblock, weights):
-        """Normalize and populate 16bit convblock in protobuf"""
-        self.fill_layer(convblock.biases, weights)
-        self.fill_layer(convblock.weights, weights)
-
-    def fill_se_unit(self, se_unit, weights):
-        self.fill_layer(se_unit.b2, weights)
-        self.fill_layer(se_unit.w2, weights)
-        self.fill_layer(se_unit.b1, weights)
-        self.fill_layer(se_unit.w1, weights)
-
     def denorm_layer_v2(self, layer):
         """Denormalize a layer from protobuf"""
         params = np.frombuffer(layer.params, np.uint16).astype(np.float32)
@@ -219,62 +197,6 @@ class Net:
     def denorm_layer(self, layer, weights):
         weights.insert(0, self.denorm_layer_v2(layer))
 
-    def denorm_conv_block(self, convblock, weights):
-        """Denormalize a convblock from protobuf"""
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-
-        if se:
-            self.denorm_layer(convblock.bn_stddivs, weights)
-            self.denorm_layer(convblock.bn_means, weights)
-            self.denorm_layer(convblock.bn_betas, weights)
-            self.denorm_layer(convblock.bn_gammas, weights)
-            self.denorm_layer(convblock.weights, weights)
-        else:
-            self.denorm_layer(convblock.bn_stddivs, weights)
-            self.denorm_layer(convblock.bn_means, weights)
-            self.denorm_layer(convblock.biases, weights)
-            self.denorm_layer(convblock.weights, weights)
-
-    def denorm_plain_conv(self, convblock, weights):
-        """Denormalize a plain convolution from protobuf"""
-        self.denorm_layer(convblock.biases, weights)
-        self.denorm_layer(convblock.weights, weights)
-
-    def denorm_se_unit(self, convblock, weights):
-        """Denormalize SE-unit from protobuf"""
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-
-        assert se
-
-        self.denorm_layer(convblock.b2, weights)
-        self.denorm_layer(convblock.w2, weights)
-        self.denorm_layer(convblock.b1, weights)
-        self.denorm_layer(convblock.w1, weights)
-
-    def save_txt(self, filename):
-        """Save weights as txt file"""
-        weights = self.get_weights()
-
-        if len(filename.split('.')) == 1:
-            filename += ".txt.gz"
-
-        # Legacy .txt files are version 2, SE is version 3.
-
-        version = 2
-        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT:
-            version = 3
-
-        if self.pb.format.network_format.policy == pb.NetworkFormat.POLICY_CONVOLUTION:
-            version = 4
-
-        with gzip.open(filename, 'wb') as f:
-            f.write("{}\n".format(version).encode('utf-8'))
-            for row in weights:
-                f.write(
-                    (" ".join(map(str, row.tolist())) + "\n").encode('utf-8'))
-
-        size = os.path.getsize(filename) / 1024**2
-        print("saved as '{}' {}M".format(filename, round(size, 2)))
 
     def save_proto(self, filename):
         """Save weights gzipped protobuf file"""
@@ -291,34 +213,15 @@ class Net:
     def tf_name_to_pb_name(self, name):
         """Given Tensorflow variable name returns the protobuf name and index
         of residual block if weight belong in a residual block."""
-
-        def convblock_to_bp(w):
-            w = w.split(':')[0]
-            d = {
-                'kernel': 'weights',
-                'gamma': 'bn_gammas',
-                'beta': 'bn_betas',
-                'moving_mean': 'bn_means',
-                'moving_variance': 'bn_stddivs',
-                'bias': 'biases'
-            }
-
-            return d[w]
-
-        def se_to_bp(l, w):
-            if l == 'dense1':
-                n = 1
-            elif l == 'dense2':
-                n = 2
-            else:
-                raise ValueError('Unable to decode SE-weight {}/{}'.format(
-                    l, w))
-            w = w.split(':')[0]
-            d = {'kernel': 'w', 'bias': 'b'}
-
-            return d[w] + str(n)
-
         def value_to_bp(l, w):
+            if l == 'dense_error':
+                w = w.split(':')[0]
+                d = {'kernel': 'ip_val_err_w', 'bias': 'ip_val_err_b'}
+                return d[w]
+            elif l == 'dense_cat':
+                w = w.split(':')[0]
+                d = {'kernel': 'ip_val_cat_w', 'bias': 'ip_val_cat_b'}
+                return d[w]
             if l == 'embedding':
                 n = ''
             elif l == 'dense1':
@@ -332,13 +235,7 @@ class Net:
             d = {'kernel': 'ip{}_val_w', 'bias': 'ip{}_val_b'}
 
             return d[w].format(n)
-
-        def conv_policy_to_bp(w):
-            w = w.split(':')[0]
-            d = {'kernel': 'ip_pol_w', 'bias': 'ip_pol_b'}
-
-            return d[w]
-
+        
         def attn_pol_to_bp(l, w):
             if l == 'wq':
                 n = 2
@@ -355,29 +252,31 @@ class Net:
             return d[w].format(n)
 
         def encoder_to_bp(l, w):
-            if l == 'ln1':
-                n = 1
-            elif l == 'ln2':
-                n = 2
-            else:
-                raise ValueError(
-                    'Unable to decode encoder weight {}/{}'.format(l, w))
             w = w.split(':')[0]
-            d = {'gamma': 'ln{}_gammas', 'beta': 'ln{}_betas'}
+            d = {'gamma': '{}_gammas', 'beta': '{}_betas'}
 
-            return d[w].format(n)
+            return d[w].format(l)
 
         def mha_to_bp(l, w):
             s = ''
-            if l.startswith('dense'):
+            # for these first two the only possibilities are the input step sizes
+            if l == 'quantize_1':
+                return 's1'
+            elif l == 'quantize_2':
+                return 's2'
+            elif l.startswith('rpe'):
+                return l
+            elif l.startswith('dense'):
                 s = 'dense'
             elif l.startswith('w'):
                 s = l[1]
+                
+
             else:
                 raise ValueError('Unable to decode mha weight {}/{}'.format(
                     l, w))
             w = w.split(':')[0]
-            d = {'kernel': '{}_w', 'bias': '{}_b'}
+            d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
 
             return d[w].format(s)
 
@@ -404,7 +303,11 @@ class Net:
 
         def ffn_to_bp(l, w):
             w = w.split(':')[0]
-            d = {'kernel': '{}_w', 'bias': '{}_b'}
+            if l == 'quantize_1':
+                return 's1'
+            elif l == 'quantize_2':
+                return 's2'
+            d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
 
             return d[w].format(l)
 
@@ -431,48 +334,32 @@ class Net:
         encoder_block = None
         pol_encoder_block = None
 
-        if base_layer == 'input':
-            pb_name = 'input.' + convblock_to_bp(weights_name)
-        elif base_layer == 'policy1':
-            pb_name = 'policy1.' + convblock_to_bp(weights_name)
-        elif base_layer == 'policy':
-            if 'dense' in layers[1]:
-                pb_name = conv_policy_to_bp(weights_name)
-            elif layers[1] == 'embedding':
+        if base_layer == 'policy':
+            pb_prefix = 'policy_heads.'
+            if layers[1] == 'embedding':
                 if layers[2].split(':')[0] == 'kernel':
-                    pb_name = 'ip_pol_w'
+                    pb_name = pb_prefix + 'ip_pol_w'
                 else:
-                    pb_name = 'ip_pol_b'
-            elif layers[1] == 'attention':
-                pb_name = attn_pol_to_bp(layers[2], weights_name)
-            elif layers[1].startswith('enc_layer_'):
-                pol_encoder_block = int(layers[1].split('_')[2]) - 1
-                if layers[2] == 'mha':
-                    pb_name = 'mha.' + mha_to_bp(layers[3], weights_name)
-                elif layers[2] == 'ffn':
-                    pb_name = 'ffn.' + ffn_to_bp(layers[3], weights_name)
-                else:
-                    pb_name = encoder_to_bp(layers[2], weights_name)
-            else:
-                pb_name = 'policy.' + convblock_to_bp(weights_name)
+                    pb_name = pb_prefix + 'ip_pol_b'
+                
+            elif layers[1] in ['vanilla', 'soft', 'optimistic_st', 'opponent', 'next']:
+                pb_prefix = pb_prefix + layers[1] + '.'
+                if layers[2] == 'attention':
+                    pb_name = attn_pol_to_bp(layers[3], weights_name)
+                pb_name = pb_prefix + pb_name
+
         elif base_layer == 'value':
-            if 'dense' in layers[1] or 'embedding' in layers[1]:
-                pb_name = value_to_bp(layers[1], weights_name)
-            else:
-                pb_name = 'value.' + convblock_to_bp(weights_name)
+            pb_prefix = ''
+            if layers[1] in ['st', 'q', 'winner']:
+                pb_prefix = 'value_heads.' + layers[1] + '.'
+            if 'dense' in layers[2] or 'embedding' in layers[2]:
+                pb_name = value_to_bp(layers[2], weights_name)
+            pb_name = pb_prefix + pb_name
+
         elif base_layer == 'moves_left':
             if 'dense' in layers[1] or 'embedding' in layers[1]:
                 pb_name = moves_left_to_bp(layers[1], weights_name)
-            else:
-                pb_name = 'moves_left.' + convblock_to_bp(weights_name)
-        elif base_layer.startswith('residual'):
-            block = int(base_layer.split('_')[1]) - 1  # 1 indexed
-            if layers[1] == '1':
-                pb_name = 'conv1.' + convblock_to_bp(weights_name)
-            elif layers[1] == '2':
-                pb_name = 'conv2.' + convblock_to_bp(weights_name)
-            elif layers[1] == 'se':
-                pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
+
         elif base_layer.startswith('encoder'):
             encoder_block = int(base_layer.split('_')[1]) - 1
             if layers[1] == 'mha':
@@ -485,19 +372,33 @@ class Net:
                 pb_name = 'ffn.' + ffn_to_bp(layers[2], weights_name)
             else:
                 pb_name = encoder_to_bp(layers[1], weights_name)
+                
         elif base_layer == 'embedding':
-            if layers[1] == 'mult_gate' or layers[1] == 'add_gate':
-                if layers[2].split(':')[0] == 'gate':
-                    pb_name = 'ip_{}'.format(layers[1])
-            elif layers[1].split(':')[0] == 'kernel':
+            if layers[1].split(':')[0] == 'kernel':
                 pb_name = 'ip_emb_w'
             elif layers[1].split(':')[0] == 'bias':
                 pb_name = 'ip_emb_b'
+            elif layers[1] == 'ffn':
+                pb_name = 'ip_emb_ffn.' + ffn_to_bp(layers[2], weights_name)
+            elif layers[1] in ['ln', 'ffn_ln']:
+                pb_name = 'ip_emb_' + encoder_to_bp(layers[1], weights_name)
+            elif layers[1] == 'preprocess':
+                if layers[2].split(':')[0] == 'kernel':
+                    pb_name = 'ip_emb_preproc_w'
+                else:
+                    pb_name = 'ip_emb_preproc_b'
+            if layers[1] == 'mult_gate' or layers[1] == 'add_gate':
+                if layers[2].split(':')[0] == 'gate':
+                    pb_name = 'ip_{}'.format(layers[1])
+
         elif base_layer == 'smol_weight_gen':
             if layers[1].split(':')[0] == 'kernel':
                 pb_name = 'smolgen_w'
             else:
                 pb_name = 'smolgen_b'
+        
+        else:
+            raise ValueError('Unable to decode layer {}'.format(name))
 
         return (pb_name, block, pol_encoder_block, encoder_block)
 
@@ -545,84 +446,20 @@ class Net:
             tensors[tf_name] = w
         return tensors
 
-    def get_weights(self):
-        """Returns the weights as floats per layer"""
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-        if self.weights == []:
-            self.denorm_layer(self.pb.weights.ip2_val_b, self.weights)
-            self.denorm_layer(self.pb.weights.ip2_val_w, self.weights)
-            self.denorm_layer(self.pb.weights.ip1_val_b, self.weights)
-            self.denorm_layer(self.pb.weights.ip1_val_w, self.weights)
-            self.denorm_conv_block(self.pb.weights.value, self.weights)
-
-            if self.pb.format.network_format.policy == pb.NetworkFormat.POLICY_CONVOLUTION:
-                self.denorm_plain_conv(self.pb.weights.policy, self.weights)
-                self.denorm_conv_block(self.pb.weights.policy1, self.weights)
-            else:
-                self.denorm_layer(self.pb.weights.ip_pol_b, self.weights)
-                self.denorm_layer(self.pb.weights.ip_pol_w, self.weights)
-                self.denorm_conv_block(self.pb.weights.policy, self.weights)
-
-            for res in reversed(self.pb.weights.residual):
-                if se:
-                    self.denorm_se_unit(res.se, self.weights)
-                self.denorm_conv_block(res.conv2, self.weights)
-                self.denorm_conv_block(res.conv1, self.weights)
-
-            self.denorm_conv_block(self.pb.weights.input, self.weights)
-
-        return self.weights
-
-    def filters(self):
-        layer = self.pb.weights.input.bn_means
-        params = np.frombuffer(layer.params, np.uint16).astype(np.float32)
-        return len(params)
-
-    def blocks(self):
-        return len(self.pb.weights.residual)
-
-    def print_stats(self):
-        print("Blocks: {}".format(self.blocks()))
-        print("Filters: {}".format(self.filters()))
-        print_pb_stats(self.pb)
-        print()
 
     def parse_proto(self, filename):
         with gzip.open(filename, 'rb') as f:
             self.pb = self.pb.FromString(f.read())
         # Populate policyFormat and valueFormat fields in old protobufs
         # without these fields.
-        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE:
-            self.set_networkformat(pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT)
-            self.set_valueformat(pb.NetworkFormat.VALUE_CLASSICAL)
-            self.set_policyformat(pb.NetworkFormat.POLICY_CLASSICAL)
-            self.set_movesleftformat(pb.NetworkFormat.MOVES_LEFT_NONE)
-        elif self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_CLASSICAL:
+        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_CLASSICAL:
             self.set_networkformat(
                 pb.NetworkFormat.NETWORK_CLASSICAL_WITH_HEADFORMAT)
             self.set_valueformat(pb.NetworkFormat.VALUE_CLASSICAL)
             self.set_policyformat(pb.NetworkFormat.POLICY_CLASSICAL)
             self.set_movesleftformat(pb.NetworkFormat.MOVES_LEFT_NONE)
 
-    def parse_txt(self, filename):
-        weights = []
 
-        with open(filename, 'r') as f:
-            try:
-                version = int(f.readline()[0])
-            except:
-                raise ValueError('Unable to read version.')
-            for e, line in enumerate(f):
-                weights.append(list(map(float, line.split(' '))))
-
-        if version == 3:
-            self.set_networkformat(pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT)
-
-        if version == 4:
-            self.set_networkformat(pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT)
-            self.set_policyformat(pb.NetworkFormat.POLICY_CONVOLUTION)
-
-        self.fill_net(weights)
 
     def fill_net_v2(self, all_weights):
         # all_weights is array of [name of weight, numpy array of weights].
@@ -665,10 +502,7 @@ class Net:
                     name = name.replace('stddev', 'variance')
 
             if self.pb.format.network_format.input < pb.NetworkFormat.INPUT_112_WITH_CANONICALIZATION_HECTOPLIES:
-                if name == 'input/conv2d/kernel:0':
-                    # 50 move rule is the 110th input, or 109 starting from 0.
-                    weights[:, 109, :, :] /= 99
-                elif name == 'embedding/kernel:0':
+                if name == 'embedding/kernel:0':
                     weights[:, 109] /= 99
 
             pb_name, block, pol_encoder_block, encoder_block = self.tf_name_to_pb_name(
@@ -701,58 +535,6 @@ class Net:
 
             self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
 
-            if pb_name.endswith('bn_betas'):
-                # Check if we need to add constant one gammas.
-                gamma_name = name.replace('beta', 'gamma')
-                if gamma_name in weight_names:
-                    continue
-                gamma = np.ones(weights.shape)
-                pb_gamma = pb_name.replace('bn_betas', 'bn_gammas')
-                self.fill_layer_v2(nested_getattr(pb_weights, pb_gamma), gamma)
-
-    def fill_net(self, weights):
-        self.weights = []
-        # Batchnorm gammas in ConvBlock?
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-        gammas = se
-
-        ws = self.get_weight_amounts()
-
-        blocks = len(weights) - (ws['input'] + ws['head'])
-
-        if blocks % ws['residual'] != 0:
-            raise ValueError("Inconsistent number of weights in the file")
-        blocks //= ws['residual']
-
-        self.pb.format.weights_encoding = pb.Format.LINEAR16
-        self.fill_layer(self.pb.weights.ip2_val_b, weights)
-        self.fill_layer(self.pb.weights.ip2_val_w, weights)
-        self.fill_layer(self.pb.weights.ip1_val_b, weights)
-        self.fill_layer(self.pb.weights.ip1_val_w, weights)
-        self.fill_conv_block(self.pb.weights.value, weights, gammas)
-
-        if self.pb.format.network_format.policy == pb.NetworkFormat.POLICY_CONVOLUTION:
-            self.fill_plain_conv(self.pb.weights.policy, weights)
-            self.fill_conv_block(self.pb.weights.policy1, weights, gammas)
-        else:
-            self.fill_layer(self.pb.weights.ip_pol_b, weights)
-            self.fill_layer(self.pb.weights.ip_pol_w, weights)
-            self.fill_conv_block(self.pb.weights.policy, weights, gammas)
-
-        del self.pb.weights.residual[:]
-        tower = []
-        for i in range(blocks):
-            tower.append(self.pb.weights.residual.add())
-
-        for res in reversed(tower):
-            if se:
-                self.fill_se_unit(res.se, weights)
-            self.fill_conv_block(res.conv2, weights, gammas)
-            self.fill_conv_block(res.conv1, weights, gammas)
-
-        self.fill_conv_block(self.pb.weights.input, weights, gammas)
-
-
 def print_pb_stats(obj, parent=None):
     for descriptor in obj.DESCRIPTOR.fields:
         value = getattr(obj, descriptor.name)
@@ -774,6 +556,7 @@ def main(argv):
     net = Net()
 
     if argv.input.endswith(".txt"):
+        raise ValueError("This script is only for protobufs")
         print('Found .txt network')
         net.parse_txt(argv.input)
         net.print_stats()
@@ -792,8 +575,6 @@ def main(argv):
             assert argv.output.endswith('.txt.gz')
         if argv.output.endswith(".pb.gz"):
             net.save_proto(argv.output)
-        else:
-            net.save_txt(argv.output)
     else:
         print('Unable to detect the network format. '
               'Filename should end in ".txt" or ".pb.gz"')

@@ -1,0 +1,1 @@
+UV_HTTP_TIMEOUT=600 uv pip install -r tf/requirements.txt --index-strategy unsafe-best-match --no-build-isolation

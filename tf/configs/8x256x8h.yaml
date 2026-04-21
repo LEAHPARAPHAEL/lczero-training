@@ -1,0 +1,54 @@
+%YAML 1.2
+---
+name: '8x256x8h'                       # ideally no spaces
+gpu: 0                                 # gpu id to process on
+
+dataset: 
+  num_chunks: 100000000                   # newest nof chunks to parse
+  train_ratio: 0.90                    # trainingset ratio
+  allow_less_chunks: true
+  sort_type: name
+  # For separated test and train data.
+  input_train: '/home/raph/leela/data/train/*/' # supports glob
+  input_test: '/home/raph/leela/data/test/*/'  # supports glob
+  # For a one-shot run with all data in one directory.
+  # input: '/path/to/chunks/*/draw/'
+  train_workers: 4
+  test_workers: 2
+
+training:
+    precision: half
+    batch_size: 512                   # training batch
+    test_steps: 2000                   # eval test set values after this many steps
+    train_avg_report_steps: 2000        # training reports its average values after this many steps.
+    total_steps: 100000                # terminate after these steps
+    warmup_steps: 1000                  # if global step is less than this, scale the current LR by ratio of global step to this value
+    checkpoint_steps: 10000          # optional frequency for checkpointing before finish
+    shuffle_size: 100000               # size of the shuffle buffer
+    lr_values:  
+        - 0.001                       # list of learning rates
+        - 0.0005
+        - 0.0001
+    lr_boundaries:
+        - 80000
+        - 90000
+    optimizer: nadam # sgd/nadam/rmsprop/adabelief/adam
+    beta_1: 0.9 
+    beta_2: 0.99
+    epsilon: 0.00001
+    policy_loss_weight: 1.0            # weight of policy loss
+    value_loss_weight: 1.0             # weight of value loss
+    moves_left_loss_weight: 1.0        # weight of moves-left loss
+    path: '/home/raph/leela/networks'    # network storage dir
+
+model:                     # Squeeze Excite structural network architecture.
+  policy: 'attention'   
+  encoder_layers: 8   
+  encoder_heads: 8  
+  encoder_d_model: 256
+  embedding_size: 256         
+  pol_embedding_size: 256                          
+  policy_d_model: 256                  
+  value: 'wdl'
+  moves_left: 'v1'
+...
