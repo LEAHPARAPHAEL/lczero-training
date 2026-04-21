@@ -171,6 +171,6 @@ if __name__ == "__main__":
     
     TARGET_GAMES = 1000000 
     MAX_DISK_SPACE_GB = 40  
-    TRAIN_RATIO = 0.8  # 80% to train, 20% to test
+    TRAIN_RATIO = 0.95  # 80% to train, 20% to test
     
     download_and_split_smart(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO)

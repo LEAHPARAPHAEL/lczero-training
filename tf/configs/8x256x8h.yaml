@@ -5,7 +5,7 @@ gpu: 0                                 # gpu id to process on
 
 dataset: 
   num_chunks: 100000000                   # newest nof chunks to parse
-  train_ratio: 0.90                    # trainingset ratio
+  train_ratio: 0.95                   # trainingset ratio
   allow_less_chunks: true
   sort_type: name
   # For separated test and train data.
@@ -24,7 +24,7 @@ training:
     total_steps: 100000                # terminate after these steps
     warmup_steps: 1000                  # if global step is less than this, scale the current LR by ratio of global step to this value
     checkpoint_steps: 10000          # optional frequency for checkpointing before finish
-    shuffle_size: 100000               # size of the shuffle buffer
+    shuffle_size: 50000               # size of the shuffle buffer
     lr_values:  
         - 0.001                       # list of learning rates
         - 0.0005
@@ -40,12 +40,14 @@ training:
     value_loss_weight: 1.0             # weight of value loss
     moves_left_loss_weight: 1.0        # weight of moves-left loss
     path: '/home/raph/leela/networks'    # network storage dir
+    logs_path: '/home/raph/leela/logs/'
 
 model:                     # Squeeze Excite structural network architecture.
   policy: 'attention'   
   encoder_layers: 8   
   encoder_heads: 8  
   encoder_d_model: 256
+  encoder_dff: 256
   embedding_size: 256         
   pol_embedding_size: 256                          
   policy_d_model: 256                  

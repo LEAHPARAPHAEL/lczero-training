@@ -98,23 +98,6 @@ def ma_gating(inputs, name):
     return out
 
 
-class ApplySqueezeExcitation(tf.keras.layers.Layer):
-
-    def __init__(self, **kwargs):
-        super(ApplySqueezeExcitation, self).__init__(**kwargs)
-
-    def build(self, input_dimens):
-        self.reshape_size = input_dimens[1][1]
-
-    def call(self, inputs):
-        x = inputs[0]
-        excited = inputs[1]
-        gammas, betas = tf.split(tf.reshape(excited,
-                                            [-1, self.reshape_size, 1, 1]),
-                                 2,
-                                 axis=1)
-        return tf.nn.sigmoid(gammas) * x + betas
-
 
 class ApplyPolicyMap(tf.keras.layers.Layer):
 
@@ -202,21 +185,14 @@ class TFProcess:
             f.write(f"{'='*60}\n")
         # ------------------------------
 
-        # Network structure
-        self.RESIDUAL_FILTERS = self.cfg['model'].get('filters', 0)
-        self.RESIDUAL_BLOCKS = self.cfg['model'].get('residual_blocks', 0)
-        self.SE_ratio = self.cfg['model'].get('se_ratio', 0)
         self.encoder_layers = self.cfg['model'].get('encoder_layers', 0)
         self.encoder_heads = self.cfg['model'].get('encoder_heads', 2)
-        assert (self.RESIDUAL_BLOCKS > 0) != (self.encoder_layers > 0), \
-                "Nets with both encoder layers and residual blocks are not supported"
-        if self.encoder_layers > 0:
-            self.RESIDUAL_FILTERS = self.cfg['model']['embedding_size']
-            self.embedding_size = self.RESIDUAL_FILTERS
+        self.embedding_size = self.cfg['model']['embedding_size']
+        
 
         self.policy_channels = self.cfg['model'].get('policy_channels', 32)
         self.pol_embedding_size = self.cfg['model'].get(
-            'pol_embedding_size', self.RESIDUAL_FILTERS)
+            'pol_embedding_size', self.embedding_size)
         self.val_embedding_size = self.cfg['model'].get(
             'value_embedding_size', 32)
         self.mov_embedding_size = self.cfg['model'].get(
@@ -227,23 +203,22 @@ class TFProcess:
         if self.cfg['model'].get('pol_encoder_layers') is not None:
             self.pol_encoder_layers = self.cfg['model'].get(
                 'pol_encoder_layers')
-        assert not ((self.pol_encoder_layers > 0) and (self.encoder_layers > 0)), \
-                "Nets with both body encoder layers and policy encoder layers are not supported"
+
         self.pol_encoder_heads = self.cfg['model'].get('pol_encoder_heads', 2)
         self.pol_encoder_d_model = self.cfg['model'].get(
-            'pol_encoder_d_model', self.RESIDUAL_FILTERS)
+            'pol_encoder_d_model', self.embedding_size)
         self.pol_encoder_dff = self.cfg['model'].get(
-            'pol_encoder_dff', (self.RESIDUAL_FILTERS * 1.5) // 1)
+            'pol_encoder_dff', (self.embedding_size * 1.5) // 1)
         self.policy_d_model = self.cfg['model'].get('policy_d_model',
-                                                    self.RESIDUAL_FILTERS)
+                                                    self.embedding_size)
 
         #encoder body
         self.input_gate = self.cfg['model'].get('input_gate')
         self.encoder_d_model = self.cfg['model'].get('encoder_d_model')
         self.encoder_dff = self.cfg['model'].get(
-            'encoder_dff', (self.RESIDUAL_FILTERS * 1.5) // 1)
+            'encoder_dff', (self.embedding_size * 1.5) // 1)
         self.policy_d_model = self.cfg['model'].get('policy_d_model',
-                                                    self.RESIDUAL_FILTERS)
+                                                    self.embedding_size)
         self.arc_encoding = self.cfg['model'].get('arc_encoding', True)
         self.square_relu_ffn = self.cfg['model'].get('square_relu_ffn', False)
 
@@ -395,7 +370,7 @@ class TFProcess:
                                                      True)
             self.strategy = None
         if self.model_dtype == tf.float16:
-            tf.keras.mixed_precision.experimental.set_policy('mixed_float16')
+            tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
         self.global_step = tf.Variable(0,
                                        name='global_step',
@@ -448,10 +423,19 @@ class TFProcess:
             self.init_net()
 
     def init_net(self):
-        self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
+        #self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
         input_var = tf.keras.Input(shape=(112, 8, 8))
         outputs = self.construct_net(input_var)
         self.model = tf.keras.Model(inputs=input_var, outputs=outputs)
+
+        print(f"Total Params: {np.sum([np.prod(w.shape) for w in self.model.trainable_weights]):,}")
+        
+        try:
+            import tensorflow_models as tfm
+            flops = tfm.core.train_utils.try_count_flops(self.model)
+            print(f"FLOPS: {flops / 10 ** 9:.03} G")
+        except ImportError:
+            print("To see FLOPs count, run: pip install tf-models-official")
 
         # swa_count initialized regardless to make checkpoint code simpler.
         self.swa_count = tf.Variable(0., name='swa_count', trainable=False)
@@ -499,7 +483,7 @@ class TFProcess:
         self.beta_1 = self.cfg['training'].get('beta_1', 0.9)
         self.beta_2 = self.cfg['training'].get('beta_2', 0.999)
         self.epsilon = self.cfg['training'].get('epsilon', 1e-7)
-        self.weight_decay = self.cfg["training"].get("weight_decay", 0.0)
+        self.weight_decay = self.cfg["training"].get("weight_decay", 0.0005)
         self.active_lr = tf.Variable(0.000001, trainable=False)
         # All 'new' (TF 2.10 or newer non-legacy) optimizers must have learning_rate updated manually.
         self.update_lr_manually = True
@@ -525,7 +509,7 @@ class TFProcess:
                 learning_rate=self.active_lr, rho=0.9, momentum=0.0, epsilon=1e-07, centered=True)
         elif self.optimizer_name == "nadam":
             self.optimizer = tf.keras.optimizers.Nadam(
-                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon)
+                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon, weight_decay = self.weight_decay)
         else:
             raise ValueError("Unknown optimizer: " + self.optimizer_name)
 
@@ -711,6 +695,7 @@ class TFProcess:
         self.cfg['training']['lr_boundaries'].sort()
         self.warmup_steps = self.cfg['training'].get('warmup_steps', 0)
         self.lr = self.cfg['training']['lr_values'][0]
+        '''
         self.test_writer = tf.summary.create_file_writer(
             os.path.join(os.getcwd(),
                          "leelalogs/{}-test".format(self.cfg['name'])))
@@ -730,6 +715,7 @@ class TFProcess:
                 os.path.join(
                     os.getcwd(),
                     "leelalogs/{}-swa-validation".format(self.cfg['name'])))
+        '''
         self.checkpoint = tf.train.Checkpoint(optimizer=self.orig_optimizer,
                                               model=self.model,
                                               global_step=self.global_step,
@@ -752,7 +738,7 @@ class TFProcess:
 
         filters, blocks = self.net.filters(), self.net.blocks()
         if not ignore_errors:
-            if self.RESIDUAL_FILTERS != filters:
+            if self.embedding_size != filters:
                 raise ValueError("Number of filters doesn't match the network")
             if self.RESIDUAL_BLOCKS != blocks:
                 raise ValueError("Number of blocks doesn't match the network")
@@ -793,6 +779,7 @@ class TFProcess:
                 else:
                     raise KeyError(error_string)
 
+            '''
             if weight.shape.ndims == 4:
                 # Rescale rule50 related weights as clients do not normalize the input.
                 if weight.name == 'input/conv2d/kernel:0' and self.net.pb.format.network_format.input < pb.NetworkFormat.INPUT_112_WITH_CANONICALIZATION_HECTOPLIES:
@@ -827,6 +814,22 @@ class TFProcess:
                 # Biases, batchnorm etc
                 new_weight = tf.constant(new_weight, shape=weight.shape)
                 weight.assign(new_weight)
+            '''
+            if weight.shape.ndims == 4:
+                new_weight = tf.constant(new_weight, shape=weight.shape)
+            elif weight.shape.ndims == 2:
+                # Fully connected layers are [in, out] in TF, [out, in] in Leela
+                s = weight.shape.as_list()
+                shape = [s[i] for i in [1, 0]]
+                new_weight = tf.constant(new_weight, shape=shape)
+                new_weight = tf.transpose(a=new_weight, perm=[1, 0])
+            else:
+                # Biases, batchnorm etc
+                new_weight = tf.constant(new_weight, shape=weight.shape)
+            
+            # Modern TF2 broadcasting prevents shape mismatch crashes
+            new_weight = tf.broadcast_to(new_weight, weight.shape)
+            weight.assign(new_weight)
         # Replace the SWA weights as well, ensuring swa accumulation is reset.
         if self.swa_enabled:
             self.swa_count.assign(tf.constant(0.))
@@ -839,6 +842,7 @@ class TFProcess:
             print("Restoring from {0}".format(self.manager.latest_checkpoint))
             self.checkpoint.restore(self.manager.latest_checkpoint)
 
+    '''
     def process_loop(self, batch_size, test_batches, batch_splits=1):
         if self.swa_enabled:
             # split half of test_batches between testing regular weights and SWA weights
@@ -861,6 +865,69 @@ class TFProcess:
         total_steps = self.cfg['training']['total_steps']
         for _ in range(steps % total_steps, total_steps):
             self.process(batch_size, test_batches, batch_splits=batch_splits)
+    '''
+    def process_loop(self, batch_size, test_batches, batch_splits=1):
+        if self.swa_enabled:
+            # split half of test_batches between testing regular weights and SWA weights
+            test_batches //= 2
+        # Make sure that ghost batch norm can be applied
+        if self.virtual_batch_size and batch_size % self.virtual_batch_size != 0:
+            # Adjust required batch size for batch splitting.
+            required_factor = self.virtual_batch_size * self.cfg[
+                "training"].get("num_batch_splits", 1)
+            raise ValueError(
+                "batch_size must be a multiple of {}".format(required_factor))
+
+        # Get the initial steps value in case this is a resume from a step count
+        # which is not a multiple of total_steps.
+        steps = self.global_step.read_value()
+        self.last_steps = steps
+        self.time_start = time.time()
+        self.profiling_start_step = None
+
+        total_steps = self.cfg["training"]["total_steps"]
+
+        def loop():
+            for _ in range(steps % total_steps, total_steps):
+                while os.path.exists("stop"):
+                    time.sleep(1)
+                self.process(batch_size, test_batches,
+                             batch_splits=batch_splits)
+
+        from importlib.util import find_spec
+        if find_spec("rich") is not None:
+            from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
+            from rich.table import Column
+
+            self.progressbar = Progress(
+                BarColumn(),
+                "[progress.percentage]{task.percentage:>4.2f}%",
+                TimeRemainingColumn(),
+                TextColumn("{task.completed:.2f} of {task.total} steps completed.",
+                           table_column=Column(ratio=1)),
+                SpinnerColumn(),
+            )
+            with self.progressbar:
+                self.progresstask = self.progressbar.add_task(
+                    f"[green]Doing {total_steps} training steps", total=total_steps)
+                try:
+                    loop()
+                except tf.errors.ResourceExhaustedError as e:
+                    print("\n" + "="*50)
+                    print(">>> FATAL OOM ERROR CAUGHT <<<")
+                    print(e)
+                    print("="*50 + "\n")
+                    print("Memory resources exhausted. Try decreasing batch size or model dimension")
+                    print("Saving model...")
+                    
+                    # Optional: Automatically save checkpoint on OOM
+                    evaled_steps = self.global_step.read_value().numpy()
+                    self.manager.save(checkpoint_number=evaled_steps)
+                    print(f"Emergency Model saved in file: {self.manager.latest_checkpoint}")
+                    exit()
+        else:
+            print("Warning: 'rich' module not found, disabling progress bar.")
+            loop()
 
     @tf.function()
     def read_weights(self):
@@ -915,6 +982,7 @@ class TFProcess:
         ]
         return metrics, new_grads
 
+    @tf.function()
     def apply_grads(self, grads, effective_batch_splits):
         grads = [
             g[0]
@@ -956,7 +1024,7 @@ class TFProcess:
 
         # Run training for this batch
         grads = None
-        for _ in range(batch_splits):
+        for batch_id in range(batch_splits):
             x, y, z, q, m = next(self.train_iter)
             if self.strategy is not None:
                 metrics, new_grads = self.strategy_process_inner_loop(
@@ -973,13 +1041,17 @@ class TFProcess:
             # Keep running averages
             for acc, val in zip(self.train_metrics, metrics):
                 acc.accumulate(val)
+
+            if hasattr(self, "progressbar"):
+                self.progressbar.update(self.progresstask, completed=steps.numpy(
+                ).item() - 1 + (batch_id+1) / batch_splits)
         # Gradients of batch splits are summed, not averaged like usual, so need to scale lr accordingly to correct for this.
         effective_batch_splits = batch_splits
         if self.strategy is not None:
             effective_batch_splits = batch_splits * self.strategy.num_replicas_in_sync
         self.active_lr.assign(self.lr / effective_batch_splits)
-        if self.update_lr_manually:
-            self.orig_optimizer.learning_rate = self.active_lr
+        #if self.update_lr_manually:
+        #    self.orig_optimizer.learning_rate = self.active_lr
         if self.strategy is not None:
             grad_norm = self.strategy_apply_grads(grads,
                                                   effective_batch_splits)
@@ -1008,11 +1080,10 @@ class TFProcess:
             print("\n")
             print("-"*60)
             print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
-            self.log_metrics_to_file(f"\Train step {steps} : ")
+            self.log_metrics_to_file(f"\nTrain step {steps} : ")
             for metric in self.train_metrics:
                 print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
-                                        metric.suffix),
-                    end="\n")
+                                        metric.suffix), end="\n")
 
                 self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
 
@@ -1020,6 +1091,7 @@ class TFProcess:
 
 
             after_weights = self.read_weights()
+            '''
             with self.train_writer.as_default():
                 for metric in self.train_metrics:
                     tf.summary.scalar(metric.long_name,
@@ -1031,6 +1103,7 @@ class TFProcess:
                                   step=steps)
                 self.compute_update_ratio(before_weights, after_weights, steps)
             self.train_writer.flush()
+            '''
 
             self.time_start = time_end
             self.last_steps = steps
@@ -1120,10 +1193,10 @@ class TFProcess:
         backup = self.read_weights()
         for (swa, w) in zip(self.swa_weights, self.model.weights):
             w.assign(swa.read_value())
-        true_test_writer, self.test_writer = self.test_writer, self.swa_writer
+        #true_test_writer, self.test_writer = self.test_writer, self.swa_writer
         print('swa', end=' ')
         self.calculate_test_summaries(test_batches, steps)
-        self.test_writer = true_test_writer
+        #self.test_writer = true_test_writer
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
@@ -1192,12 +1265,14 @@ class TFProcess:
         self.net.pb.training_params.policy_loss = self.test_metrics[0].get()
         # TODO store value and value accuracy in pb
         self.net.pb.training_params.accuracy = self.test_metrics[4].get()
+        '''
         with self.test_writer.as_default():
             for metric in self.test_metrics:
                 tf.summary.scalar(metric.long_name, metric.get(), step=steps)
             for w in self.model.weights:
                 tf.summary.histogram(w.name, w, step=steps)
         self.test_writer.flush()
+        '''
 
         print("\n")
         print("-"*60)
@@ -1215,10 +1290,10 @@ class TFProcess:
         backup = self.read_weights()
         for (swa, w) in zip(self.swa_weights, self.model.weights):
             w.assign(swa.read_value())
-        true_validation_writer, self.validation_writer = self.validation_writer, self.swa_validation_writer
+        #true_validation_writer, self.validation_writer = self.validation_writer, self.swa_validation_writer
         print('swa', end=' ')
         self.calculate_test_validations(steps)
-        self.validation_writer = true_validation_writer
+        #self.validation_writer = true_validation_writer
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
@@ -1234,10 +1309,12 @@ class TFProcess:
                     x, y, z, q, m)
             for acc, val in zip(self.test_metrics, metrics):
                 acc.accumulate(val)
+        '''
         with self.validation_writer.as_default():
             for metric in self.test_metrics:
                 tf.summary.scalar(metric.long_name, metric.get(), step=steps)
         self.validation_writer.flush()
+        '''
 
         print("step {}, validation:".format(steps), end='')
         for metric in self.test_metrics:
@@ -1300,6 +1377,7 @@ class TFProcess:
             self.net.set_attention_masks(self.attention_masks_cfg)
         self.net.save_proto(filename)
 
+    '''
     def batch_norm(self, input, name, scale=False):
         if self.renorm_enabled:
             clipping = {
@@ -1386,6 +1464,7 @@ class TFProcess:
                                        name=name + '/se')
         return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
             tf.keras.layers.add([inputs, out2]))
+    '''
 
     @staticmethod
     def split_heads(inputs, batch_size: int, num_heads: int, depth: int):
@@ -1494,7 +1573,7 @@ class TFProcess:
             beta = tf.cast(tf.math.pow(8. * self.encoder_layers, -0.25),
                            self.model_dtype)
             xavier_norm = tf.keras.initializers.VarianceScaling(
-                scale=beta, mode='fan_avg', distribution='truncated_normal')
+                scale=beta, mode='fan_avg', distribution='truncated_normal', seed = 42)
             initializer = xavier_norm
         else:
             alpha = 1
@@ -1558,12 +1637,12 @@ class TFProcess:
     def create_residual_body(self, inputs):
         flow = self.conv_block(inputs,
                                filter_size=3,
-                               output_channels=self.RESIDUAL_FILTERS,
+                               output_channels=self.embedding_size,
                                name='input',
                                bn_scale=True)
         for i in range(self.RESIDUAL_BLOCKS):
             flow = self.residual_block(flow,
-                                       self.RESIDUAL_FILTERS,
+                                       self.embedding_size,
                                        name='residual_{}'.format(i + 1))
         return flow
 
@@ -1590,7 +1669,6 @@ class TFProcess:
         # square embedding
         flow = tf.keras.layers.Dense(embedding_size,
                                      kernel_initializer='glorot_normal',
-                                     kernel_regularizer=self.l2reg,
                                      activation=self.DEFAULT_ACTIVATION,
                                      name='embedding')(flow)
 
@@ -1671,10 +1749,11 @@ class TFProcess:
             flow = self.create_residual_body(inputs)
 
         # Policy head
+        '''
         if self.POLICY_HEAD == pb.NetworkFormat.POLICY_CONVOLUTION:
             conv_pol = self.conv_block(flow,
                                        filter_size=3,
-                                       output_channels=self.RESIDUAL_FILTERS,
+                                       output_channels=self.embedding_size,
                                        name='policy1')
             conv_pol2 = tf.keras.layers.Conv2D(
                 80,
@@ -1698,121 +1777,83 @@ class TFProcess:
                                           kernel_regularizer=self.l2reg,
                                           bias_regularizer=self.l2reg,
                                           name='policy/dense')(h_conv_pol_flat)
-        elif self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION:
-            if self.encoder_layers == 0:
-                attn_wts = []
-            if self.RESIDUAL_BLOCKS > 0:
-                # transpose and reshape
-                tokens = tf.transpose(flow, perm=[0, 2, 3, 1])
-                tokens = tf.reshape(tokens, [-1, 64, self.RESIDUAL_FILTERS])
-                embed_activation = 'selu'
-            else:
-                tokens = flow
-                embed_activation = self.DEFAULT_ACTIVATION
-            # SQUARE EMBEDDING: found to increase attention head performance
-            tokens = tf.keras.layers.Dense(self.pol_embedding_size,
-                                           kernel_initializer='glorot_normal',
-                                           kernel_regularizer=self.l2reg,
-                                           activation=embed_activation,
-                                           name='policy/embedding')(tokens)
-            if self.RESIDUAL_BLOCKS > 0:
-                # ENCODER LAYERS: intermediate layers of self-attention with residual connections
-                for i in range(self.pol_encoder_layers):
-                    tokens, attn_wts_l = self.encoder_layer(
-                        tokens,
-                        self.pol_embedding_size,
-                        self.pol_encoder_d_model,
-                        self.pol_encoder_heads,
-                        self.pol_encoder_dff,
-                        name='policy/enc_layer_{}'.format(i + 1))
-                    attn_wts.append(attn_wts_l)
+        '''
+        #elif self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION:
+        assert (self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION)
+        tokens = flow
+        embed_activation = self.DEFAULT_ACTIVATION
+        # SQUARE EMBEDDING: found to increase attention head performance
+        tokens = tf.keras.layers.Dense(self.pol_embedding_size,
+                                        kernel_initializer='glorot_normal',
+                                        activation=embed_activation,
+                                        name='policy/embedding')(tokens)
 
-            # create queries and keys for policy self-attention
-            queries = tf.keras.layers.Dense(self.policy_d_model,
-                                            kernel_initializer='glorot_normal',
-                                            name='policy/attention/wq')(tokens)
-            keys = tf.keras.layers.Dense(self.policy_d_model,
-                                         kernel_initializer='glorot_normal',
-                                         name='policy/attention/wk')(tokens)
+        # create queries and keys for policy self-attention
+        queries = tf.keras.layers.Dense(self.policy_d_model,
+                                        kernel_initializer='glorot_normal',
+                                        name='policy/attention/wq')(tokens)
+        keys = tf.keras.layers.Dense(self.policy_d_model,
+                                        kernel_initializer='glorot_normal',
+                                        name='policy/attention/wk')(tokens)
 
-            h_fc1 = self.apply_promotion_logits(queries, keys, attn_wts)
-
+        h_fc1 = self.apply_promotion_logits(queries, keys, attn_wts)
+        
+        '''
         else:
             raise ValueError("Unknown policy head type {}".format(
                 self.POLICY_HEAD))
+        '''
 
-        # Value head
-        if self.encoder_layers > 0:
-            conv_val = tf.keras.layers.Dense(
-                self.val_embedding_size,
-                kernel_initializer='glorot_normal',
-                kernel_regularizer=self.l2reg,
-                activation=self.DEFAULT_ACTIVATION,
-                name='value/embedding')(flow)
-        else:
-            conv_val = self.conv_block(flow,
-                                       filter_size=1,
-                                       output_channels=32,
-                                       name='value')
+        conv_val = tf.keras.layers.Dense(
+            self.val_embedding_size,
+            kernel_initializer='glorot_normal',
+            activation=self.DEFAULT_ACTIVATION,
+            name='value/embedding')(flow)
+
 
         h_conv_val_flat = tf.keras.layers.Flatten()(conv_val)
         h_fc2 = tf.keras.layers.Dense(128,
                                       kernel_initializer='glorot_normal',
-                                      kernel_regularizer=self.l2reg,
                                       activation=self.DEFAULT_ACTIVATION,
                                       name='value/dense1')(h_conv_val_flat)
         if self.wdl:
             h_fc3 = tf.keras.layers.Dense(3,
                                           kernel_initializer='glorot_normal',
-                                          kernel_regularizer=self.l2reg,
-                                          bias_regularizer=self.l2reg,
+                                          dtype='float32',
                                           name='value/dense2')(h_fc2)
         else:
             h_fc3 = tf.keras.layers.Dense(1,
                                           kernel_initializer='glorot_normal',
-                                          kernel_regularizer=self.l2reg,
                                           activation='tanh',
+                                          dtype='float32',
                                           name='value/dense2')(h_fc2)
 
         # Moves left head
         if self.moves_left:
-            if self.encoder_layers > 0:
-                conv_mov = tf.keras.layers.Dense(
-                    self.mov_embedding_size,
-                    kernel_initializer='glorot_normal',
-                    kernel_regularizer=self.l2reg,
-                    activation=self.DEFAULT_ACTIVATION,
-                    name='moves_left/embedding')(flow)
-            else:
-                conv_mov = self.conv_block(flow,
-                                           filter_size=1,
-                                           output_channels=8,
-                                           name='moves_left')
+            conv_mov = tf.keras.layers.Dense(
+                self.mov_embedding_size,
+                kernel_initializer='glorot_normal',
+                activation=self.DEFAULT_ACTIVATION,
+                name='moves_left/embedding')(flow)
+
             h_conv_mov_flat = tf.keras.layers.Flatten()(conv_mov)
             h_fc4 = tf.keras.layers.Dense(
                 128,
                 kernel_initializer='glorot_normal',
-                kernel_regularizer=self.l2reg,
                 activation=self.DEFAULT_ACTIVATION,
                 name='moves_left/dense1')(h_conv_mov_flat)
 
             h_fc5 = tf.keras.layers.Dense(1,
                                           kernel_initializer='glorot_normal',
-                                          kernel_regularizer=self.l2reg,
                                           activation='relu',
+                                          dtype='float32',
                                           name='moves_left/dense2')(h_fc4)
         else:
             h_fc5 = None
 
-        # attention weights added as optional output for analysis -- ignored by backend
-        if self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION:
-            if self.moves_left:
-                outputs = [h_fc1, h_fc3, h_fc5, attn_wts]
-            else:
-                outputs = [h_fc1, h_fc3, attn_wts]
-        elif self.moves_left:
-            outputs = [h_fc1, h_fc3, h_fc5]
+        if self.moves_left:
+            outputs = [h_fc1, h_fc3, h_fc5, attn_wts]
         else:
-            outputs = [h_fc1, h_fc3]
+            outputs = [h_fc1, h_fc3, attn_wts]
 
         return outputs

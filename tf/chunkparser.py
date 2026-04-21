@@ -443,8 +443,20 @@ class ChunkParserInner:
             if version == V6_VERSION:
                 # diff focus code, peek at best_q, orig_q and pol_kld from record (unpacks as tuple with one item)
                 best_q = struct.unpack('f', record[8284:8288])[0]
+                
+                # --- ADDED SAFEGUARD ---
+                # Unpack best_d to verify it alongside best_q
+                best_d = struct.unpack('f', record[8292:8296])[0]
+                
+                # If either value is NaN, or out of mathematical bounds, silently drop the corrupted record
+                if np.isnan(best_q) or np.isnan(best_d):
+                    continue
+                # -----------------------
+
                 orig_q = struct.unpack('f', record[8328:8332])[0]
                 pol_kld = struct.unpack('f', record[8348:8352])[0]
+
+                # if orig_q is NaN or pol_kld is 0, accept, else accept based on diff focus
 
                 # if orig_q is NaN or pol_kld is 0, accept, else accept based on diff focus
                 if not np.isnan(orig_q) and pol_kld > 0:
@@ -476,13 +488,17 @@ class ChunkParserInner:
                     print('Unknown version {} in file {}'.format(
                         version, filename))
                     return
+                chunkdata = chunk_file.read()
+                for item in self.sample_record(chunkdata):
+                    yield item
+                '''
                 while True:
                     chunkdata = chunk_file.read(256 * record_size)
                     if len(chunkdata) == 0:
                         break
                     for item in self.sample_record(chunkdata):
                         yield item
-
+                '''
         except:
             print("failed to parse {}".format(filename))
 
