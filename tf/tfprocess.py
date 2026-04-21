@@ -318,6 +318,19 @@ class TFProcess:
 
         self.net.set_input(self.INPUT_MODE)
 
+        self.embedding_style = self.cfg["model"].get("embedding_style", "old").lower()
+        self.embedding_dense_sz = self.cfg["model"].get("embedding_dense_sz", 32)
+        
+        if self.embedding_style == "new":
+            self.net.set_input_embedding(
+                pb.NetworkFormat.INPUT_EMBEDDING_PE_DENSE)
+        elif self.encoder_layers > 0:
+            self.net.set_input_embedding(
+                pb.NetworkFormat.INPUT_EMBEDDING_PE_MAP)
+        else:
+            self.net.set_input_embedding(
+                pb.NetworkFormat.INPUT_EMBEDDING_NONE)
+
         if default_activation == "relu":
             self.net.set_defaultactivation(
                 pb.NetworkFormat.DEFAULT_ACTIVATION_RELU)
@@ -1656,25 +1669,62 @@ class TFProcess:
             self.smol_weight_gen_dense = tf.keras.layers.Dense(
                 64 * 64, name='smol_weight_gen', use_bias=False)
 
-        flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
-        flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
-        # add positional encoding for each square to the input
-        if self.arc_encoding:
-            self.POS_ENC = apm.make_pos_enc()
-            positional_encoding = tf.broadcast_to(
-                tf.convert_to_tensor(self.POS_ENC, dtype=flow.dtype),
-                [tf.shape(flow)[0], 64,
-                 tf.shape(self.POS_ENC)[2]])
-            flow = tf.concat([flow, positional_encoding], axis=2)
+        if self.embedding_style == "new":
+            # --- NEW JAX-STYLE EMBEDDING ---
+            # 1. Preprocess positional info (first 12 channels)
+            pos_info = flow[..., :12]
+            pos_info_flat = tf.reshape(pos_info, [-1, 64 * 12])
+            
+            pos_info_processed = tf.keras.layers.Dense(
+                64 * self.embedding_dense_sz, name="embedding/preprocess")(pos_info_flat)
+            
+            pos_info = tf.reshape(pos_info_processed, [-1, 64, self.embedding_dense_sz])
+            flow = tf.concat([flow, pos_info], axis=2)
 
-        # square embedding
-        flow = tf.keras.layers.Dense(embedding_size,
-                                     kernel_initializer='glorot_normal',
-                                     activation=self.DEFAULT_ACTIVATION,
-                                     name='embedding')(flow)
+            # 2. Square embedding
+            flow = tf.keras.layers.Dense(embedding_size,
+                                         kernel_initializer='glorot_normal',
+                                         activation=self.DEFAULT_ACTIVATION,
+                                         name='embedding')(flow)
+            
+            # 3. Layer Norm and Gating
+            flow = tf.keras.layers.LayerNormalization(epsilon=1e-3, name="embedding/ln")(flow)
+            flow = ma_gating(flow, name='embedding')
 
-        # !!! input gate
-        flow = ma_gating(flow, name='embedding')
+            # 4. DeepNorm calculations for FFN
+            alpha = tf.cast(tf.math.pow(2. * self.encoder_layers, -0.25), self.model_dtype)
+            beta = tf.cast(tf.math.pow(8. * self.encoder_layers, -0.25), self.model_dtype)
+
+            xavier_norm = tf.keras.initializers.VarianceScaling(
+                scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+
+            # 5. FFN block with residual connection and final Layer Norm
+            ffn_output = self.ffn(flow, embedding_size, self.encoder_dff,
+                                  xavier_norm, name="embedding/ffn")
+
+            flow = tf.keras.layers.LayerNormalization(
+                epsilon=1e-3, name="embedding/ffn_ln")(flow + ffn_output * alpha)
+
+        else:
+            flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
+            flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
+            # add positional encoding for each square to the input
+            if self.arc_encoding:
+                self.POS_ENC = apm.make_pos_enc()
+                positional_encoding = tf.broadcast_to(
+                    tf.convert_to_tensor(self.POS_ENC, dtype=flow.dtype),
+                    [tf.shape(flow)[0], 64,
+                    tf.shape(self.POS_ENC)[2]])
+                flow = tf.concat([flow, positional_encoding], axis=2)
+
+            # square embedding
+            flow = tf.keras.layers.Dense(embedding_size,
+                                        kernel_initializer='glorot_normal',
+                                        activation=self.DEFAULT_ACTIVATION,
+                                        name='embedding')(flow)
+
+            # !!! input gate
+            flow = ma_gating(flow, name='embedding')
         attn_wts = []
         for i in range(self.encoder_layers):
             flow, attn_wts_l = self.encoder_layer(flow,
