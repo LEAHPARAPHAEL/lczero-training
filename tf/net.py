@@ -108,6 +108,9 @@ class Net:
         if self.pb.min_version.minor < LC0_MINOR_WITH_ATTN_BODY:
             self.pb.min_version.minor = LC0_MINOR_WITH_ATTN_BODY
         return None
+    
+    def set_input_embedding(self, embedding):
+        self.pb.format.network_format.input_embedding = embedding
 
     def set_attention_masks(self, mask_rules):
         del self.pb.format.network_format.attention_masks[:]
@@ -489,10 +492,33 @@ class Net:
             if layers[1] == 'mult_gate' or layers[1] == 'add_gate':
                 if layers[2].split(':')[0] == 'gate':
                     pb_name = 'ip_{}'.format(layers[1])
-            elif layers[1].split(':')[0] == 'kernel':
-                pb_name = 'ip_emb_w'
-            elif layers[1].split(':')[0] == 'bias':
-                pb_name = 'ip_emb_b'
+            elif layers[1] == 'preprocess':
+                if layers[2].split(':')[0] == 'kernel':
+                    pb_name = 'ip_emb_preproc_w'
+                else:
+                    pb_name = 'ip_emb_preproc_b'
+            elif layers[1] == 'ln':
+                if layers[2].split(':')[0] == 'gamma':
+                    pb_name = 'ip_emb_ln_gammas'
+                else:
+                    pb_name = 'ip_emb_ln_betas'
+            elif layers[1] == 'ffn':
+                # layers[2] is 'dense1' or 'dense2'
+                # layers[3] is 'kernel:0' or 'bias:0'
+                dense_num = layers[2] 
+                w_type = 'w' if layers[3].split(':')[0] == 'kernel' else 'b'
+                pb_name = 'ip_emb_ffn.{}_{}'.format(dense_num, w_type)
+            elif layers[1] == 'ffn_ln':
+                if layers[2].split(':')[0] == 'gamma':
+                    pb_name = 'ip_emb_ffn_ln_gammas'
+                else:
+                    pb_name = 'ip_emb_ffn_ln_betas'
+            elif len(layers) == 2:
+                # The main square embedding
+                if layers[1].split(':')[0] == 'kernel':
+                    pb_name = 'ip_emb_w'
+                elif layers[1].split(':')[0] == 'bias':
+                    pb_name = 'ip_emb_b'
         elif base_layer == 'smol_weight_gen':
             if layers[1].split(':')[0] == 'kernel':
                 pb_name = 'smolgen_w'

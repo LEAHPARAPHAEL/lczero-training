@@ -1668,46 +1668,55 @@ class TFProcess:
         if self.use_smolgen:
             self.smol_weight_gen_dense = tf.keras.layers.Dense(
                 64 * 64, name='smol_weight_gen', use_bias=False)
-
+            
         if self.embedding_style == "new":
-            # --- NEW JAX-STYLE EMBEDDING ---
-            # 1. Preprocess positional info (first 12 channels)
+            inputs = tf.cast(inputs, self.model_dtype)
+            flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
+            flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
+
+            # 1. Preprocess positional info
             pos_info = flow[..., :12]
             pos_info_flat = tf.reshape(pos_info, [-1, 64 * 12])
-            
+
             pos_info_processed = tf.keras.layers.Dense(
                 64 * self.embedding_dense_sz, name="embedding/preprocess")(pos_info_flat)
+            pos_info = tf.reshape(pos_info_processed,
+                                  [-1, 64, self.embedding_dense_sz])
             
-            pos_info = tf.reshape(pos_info_processed, [-1, 64, self.embedding_dense_sz])
-            flow = tf.concat([flow, pos_info], axis=2)
+            # Now both are float16, concat is safe
+            flow = tf.keras.layers.Concatenate(axis=2)([flow, pos_info])
 
             # 2. Square embedding
-            flow = tf.keras.layers.Dense(embedding_size,
-                                         kernel_initializer='glorot_normal',
+            flow = tf.keras.layers.Dense(self.embedding_size, kernel_initializer="glorot_normal",
                                          activation=self.DEFAULT_ACTIVATION,
-                                         name='embedding')(flow)
+                                         name="embedding")(flow)
             
-            # 3. Layer Norm and Gating
-            flow = tf.keras.layers.LayerNormalization(epsilon=1e-3, name="embedding/ln")(flow)
+            # FIX: Use standard LayerNormalization instead of self.encoder_norm
+            flow = tf.keras.layers.LayerNormalization(
+                epsilon=1e-3, name="embedding/ln")(flow)
             flow = ma_gating(flow, name='embedding')
 
-            # 4. DeepNorm calculations for FFN
-            alpha = tf.cast(tf.math.pow(2. * self.encoder_layers, -0.25), self.model_dtype)
-            beta = tf.cast(tf.math.pow(8. * self.encoder_layers, -0.25), self.model_dtype)
+            # 3. DeepNorm scaling factors
+            alpha = tf.cast(tf.math.pow(
+                2. * self.encoder_layers, -0.25), self.model_dtype)
+            beta = tf.cast(tf.math.pow(
+                8. * self.encoder_layers, -0.25), self.model_dtype)
 
             xavier_norm = tf.keras.initializers.VarianceScaling(
                 scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
-            # 5. FFN block with residual connection and final Layer Norm
-            ffn_output = self.ffn(flow, embedding_size, self.encoder_dff,
+            # 4. Feed-forward network (FIX: removed 'activations =' unpacking)
+            ffn_output = self.ffn(flow, self.embedding_size, self.encoder_dff,
                                   xavier_norm, name="embedding/ffn")
 
+            # FIX: Use standard LayerNormalization instead of self.encoder_norm
             flow = tf.keras.layers.LayerNormalization(
                 epsilon=1e-3, name="embedding/ffn_ln")(flow + ffn_output * alpha)
 
         else:
             flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
             flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
+
             # add positional encoding for each square to the input
             if self.arc_encoding:
                 self.POS_ENC = apm.make_pos_enc()

@@ -32,6 +32,7 @@ training:
     lr_boundaries:
         - 80000
         - 90000
+    mask_legal_moves: true
     optimizer: nadam # sgd/nadam/rmsprop/adabelief/adam
     beta_1: 0.9 
     beta_2: 0.99
@@ -43,7 +44,9 @@ training:
     logs_path: '/home/raph/leela/logs/'
 
 model:                     # Squeeze Excite structural network architecture.
-  policy: 'attention'   
+  policy: 'attention'  
+  embedding_style: 'new'
+  embedding_dense_sz: 32    
   encoder_layers: 8   
   encoder_heads: 8  
   encoder_d_model: 256
