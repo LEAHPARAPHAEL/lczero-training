@@ -12,3 +12,9 @@ cd lczero/tf
 python train.py --cfg configs/8x256-256_no_mask.yaml --output /tmp/8x256-256_no_mask.txt
 
 python train.py --cfg configs/8x256-256_rbk.yaml --output /tmp/8x256-256_rbk.txt
+
+# git
+git config --global pull.rebase true
+git status
+git add <filename>
+git rebase --continue
