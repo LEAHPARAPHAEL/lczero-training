@@ -1577,12 +1577,12 @@ class TFProcess:
         max_grad_norm = self.cfg['training'].get(
             'max_grad_norm', 10000.0) * effective_batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-
+        '''
         if not tf.math.is_finite(grad_norm):
             tf.print("========== CRITICAL WARNING ==========")
             tf.print("NaN or Inf detected in gradients. Applying weight update anyway.")
             tf.print("======================================")
-
+            '''
         self.optimizer.apply_gradients(zip(grads,
                                            self.model.trainable_weights),
                                        experimental_aggregate_gradients=False)
