@@ -447,9 +447,11 @@ class ChunkParserInner:
                 # --- ADDED SAFEGUARD ---
                 # Unpack best_d to verify it alongside best_q
                 best_d = struct.unpack('f', record[8292:8296])[0]
+
+                plies_left = struct.unpack('f', record[8304:8308])[0]
                 
                 # If either value is NaN, or out of mathematical bounds, silently drop the corrupted record
-                if np.isnan(best_q) or np.isnan(best_d):
+                if np.isnan(best_q) or np.isnan(best_d) or np.isnane(plies_left):
                     continue
                 # -----------------------
 
