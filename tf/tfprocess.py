@@ -1353,7 +1353,7 @@ class TFProcess:
     def restore(self):
         if self.manager.latest_checkpoint is not None:
             print("Restoring from {0}".format(self.manager.latest_checkpoint))
-            self.checkpoint.restore(self.manager.latest_checkpoint)
+            self.checkpoint.restore(self.manager.latest_checkpoint).expect_partial()
 
     def process_loop(self, batch_size: int, test_batches: int, batch_splits: int = 1):
         if self.swa_enabled:
