@@ -35,8 +35,8 @@ sample_record() also skips most training records to avoid sampling over-correlat
 positions since they typically are from sequential positions in a game.
 
 Current implementation of "diff focus" also is in sample_record() and works by
-probabilistically skipping records according to how accurate the no-search 
-eval ('orig_q') is compared to eval after search ('best_q') as well as the
+probabilistically skipping records according to how accurate the no-search
+eval ("orig_q") is compared to eval after search ("best_q") as well as the
 recorded policy_kld (a measure of difference between no search policy and the
 final policy distribution). It does not use draw values at this point. Putting
 diff focus here is efficient because it runs in parallel workers and peeks at
@@ -66,29 +66,37 @@ import shufflebuffer as sb
 import struct
 import unittest
 import gzip
+from time import time, sleep
 from select import select
 
-V6_VERSION = struct.pack('i', 6)
-V5_VERSION = struct.pack('i', 5)
-CLASSICAL_INPUT = struct.pack('i', 1)
-V4_VERSION = struct.pack('i', 4)
-V3_VERSION = struct.pack('i', 3)
-V7_VERSION = struct.pack('i', 7)
-V6_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffffffffffffIHH4H'
-V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
-V5_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffff'
-V4_STRUCT_STRING = '4s7432s832sBBBBBBBbffff'
-V3_STRUCT_STRING = '4s7432s832sBBBBBBBb'
+n_future_probs = 2
+n_future_boards = 16
 
+V7B_VERSION = struct.pack("i", 170)
+V7_VERSION = struct.pack("i", 7)
+V6_VERSION = struct.pack("i", 6)
+V5_VERSION = struct.pack("i", 5)
+CLASSICAL_INPUT = struct.pack("i", 1)
+V4_VERSION = struct.pack("i", 4)
+V3_VERSION = struct.pack("i", 3)
+V7B_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff" + "7432s" * n_future_probs + str(12 * 8 * n_future_boards) + "s"
+V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
+V6_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHff"
+V5_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffff"
+V4_STRUCT_STRING = "4s7432s832sBBBBBBBbffff"
+V3_STRUCT_STRING = "4s7432s832sBBBBBBBb"
+
+v7b_struct = struct.Struct(V7B_STRUCT_STRING)
 v7_struct = struct.Struct(V7_STRUCT_STRING)
 v6_struct = struct.Struct(V6_STRUCT_STRING)
 v5_struct = struct.Struct(V5_STRUCT_STRING)
 v4_struct = struct.Struct(V4_STRUCT_STRING)
 v3_struct = struct.Struct(V3_STRUCT_STRING)
 
-struct_sizes = {V7_VERSION: v7_struct.size,
+struct_sizes = {V7B_VERSION: v7b_struct.size, V7_VERSION: v7_struct.size,
                 V6_VERSION: v6_struct.size, V5_VERSION: v5_struct.size,
                 V4_VERSION: v4_struct.size, V3_VERSION: v3_struct.size}
+
 
 
 
@@ -106,6 +114,18 @@ class ChunkDataSrc:
         if not self.items:
             return None
         return self.items.pop()
+    
+
+def reverse_board(planes):
+    # planes is 12 * 8 = 96 bytes
+    # The order of the squares is reversed when switching sides, so first reverse 
+    # the squares within each plane, then switch the first 6 planes (player 1 pieces) with planes 6:12 (player 2 pieces)
+    # the 13th plane is 1 for empty squares and 0 for occupied squares, so it doesn't need to be reversed
+    planes = bytearray(planes)
+    for i in range(len(planes) // 8):
+        planes[i*8:(i+1)*8] = planes[i*8:(i+1)*8][::-1]
+    planes[:48], planes[48:] = planes[48:], planes[:48]
+    return planes
 
 
 def chunk_reader(chunk_filenames, chunk_filename_queue):
@@ -144,9 +164,9 @@ class ChunkParser:
                  diff_focus_slope=0,
                  diff_focus_q_weight=6.0,
                  diff_focus_pol_scale=3.5,
-                 workers=None,
-                 pc_min = None,
-                 pc_max = None):
+                 pc_min=None,
+                 pc_max=None,
+                 workers=None):
         self.inner = ChunkParserInner(self, chunks, expected_input_format,
                                       shuffle_size, sample, buffer_size,
                                       batch_size, diff_focus_min,
@@ -170,22 +190,226 @@ class ChunkParser:
 
     def sequential(self):
         return self.inner.sequential()
+    
+
+
+def convert_v7b_to_tuple(content):
+    """
+    Unpack a v6 binary record to 5-tuple (state, policy pi, result, q, m)
+
+    v6 struct format is (8356 bytes total):
+                                size         1st byte index
+    uint32_t version;                               0
+    uint32_t input_format;                          4
+    float probabilities[1858];  7432 bytes          8
+    uint64_t planes[104];        832 bytes       7440
+    uint8_t castling_us_ooo;                     8272
+    uint8_t castling_us_oo;                      8273
+    uint8_t castling_them_ooo;                   8274
+    uint8_t castling_them_oo;                    8275
+    uint8_t side_to_move_or_enpassant;           8276
+    uint8_t rule50_count;                        8277
+    // Bitfield with the following allocation:
+    //  bit 7: side to move (input type 3)
+    //  bit 6: position marked for deletion by the rescorer (never set by lc0)
+    //  bit 5: game adjudicated (v6)
+    //  bit 4: max game length exceeded (v6)
+    //  bit 3: best_q is for proven best move (v6)
+    //  bit 2: transpose transform (input type 3)
+    //  bit 1: mirror transform (input type 3)
+    //  bit 0: flip transform (input type 3)
+    uint8_t invariance_info;                     8278
+    uint8_t dep_result;                               8279
+    float root_q;                                8280
+    float best_q;                                8284
+    float root_d;                                8288
+    float best_d;                                8292
+    float root_m;      // In plies.              8296
+    float best_m;      // In plies.              8300
+    float plies_left;                            8304
+    float result_q;                              8308
+    float result_d;                              8312
+    float played_q;                              8316
+    float played_d;                              8320
+    float played_m;                              8324
+    // The folowing may be NaN if not found in cache.
+    float orig_q;      // For value repair.      8328
+    float orig_d;                                8332
+    float orig_m;                                8336
+    uint32_t visits;                             8340
+    // Indices in the probabilities array.
+    uint16_t played_idx;                         8344
+    uint16_t best_idx;                           8346
+    float pol_kld;                               8348
+    float q_st;                                  8352
+    float d_st;                                  8356
+    uint16_t opp_played_idx;                     8360
+    uint16_t next_played_idx;                    8362
+    float extra[8]                               8364
+    ...                                          8396
+    """
+    # unpack the V6 content from raw byte array, arbitrarily chose 4 2-byte values
+    # for the 8 "reserved" bytes
+    (ver, input_format, probs, planes, us_ooo, us_oo, them_ooo, them_oo,
+        stm, rule50_count, invariance_info, dep_result, root_q, best_q,
+        root_d, best_d, root_m, best_m, plies_left, result_q, result_d,
+        played_q, played_d, played_m, orig_q, orig_d, orig_m, visits,
+        played_idx, best_idx, pol_kld, st_q, st_d, opp_played_idx, next_played_idx,
+        f1, f2, f3, f4, f5, f6, f7, f8, opp_probs, next_probs, fut) = v7b_struct.unpack(content)
+    """
+    v5 struct format was (8308 bytes total)
+        int32 version (4 bytes)
+        int32 input_format (4 bytes)
+        1858 float32 probabilities (7432 bytes)
+        104 (13*8) packed bit planes of 8 bytes each (832 bytes)
+        uint8 castling us_ooo (1 byte)
+        uint8 castling us_oo (1 byte)
+        uint8 castling them_ooo (1 byte)
+        uint8 castling them_oo (1 byte)
+        uint8 side_to_move (1 byte)
+        uint8 rule50_count (1 byte)
+        uint8 dep_ply_count (1 byte) (unused)
+        int8 result (1 byte)
+        float32 root_q (4 bytes)
+        float32 best_q (4 bytes)
+        float32 root_d (4 bytes)
+        float32 best_d (4 bytes)
+        float32 root_m (4 bytes)
+        float32 best_m (4 bytes)
+        float32 plies_left (4 bytes)
+    """
+    # v3/4 data sometimes has a useful value in dep_ply_count (now invariance_info),
+    # so copy that over if the new ply_count is not populated.
+
+    flat_planes = []
+    for i in range(2):
+        flat_planes.append(
+            (np.zeros(64, dtype=np.float32) + i).tobytes())
+
+
+    if plies_left == 0:
+        plies_left = invariance_info
+    plies_left = struct.pack("f", plies_left)
+
+    # Unpack bit planes and cast to 32 bit float
+    planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(
+        np.float32)
+    rule50_divisor = 99.0
+    if input_format > 3:
+        rule50_divisor = 100.0
+    rule50_plane = struct.pack("f", rule50_count / rule50_divisor) * 64
+
+    if input_format == 1:
+        middle_planes = flat_planes[us_ooo] + \
+            flat_planes[us_oo] + \
+            flat_planes[them_ooo] + \
+            flat_planes[them_oo] + \
+            flat_planes[stm]
+    elif input_format == 2:
+        # Each inner array has to be reversed as these fields are in opposite endian to the planes data.
+        them_ooo_bytes = reverse_expand_bits(them_ooo)
+        us_ooo_bytes = reverse_expand_bits(us_ooo)
+        them_oo_bytes = reverse_expand_bits(them_oo)
+        us_oo_bytes = reverse_expand_bits(us_oo)
+        middle_planes = us_ooo_bytes + (6*8*4) * b"\x00" + them_ooo_bytes + \
+            us_oo_bytes + (6*8*4) * b"\x00" + them_oo_bytes + \
+            flat_planes[0] + \
+            flat_planes[0] + \
+            flat_planes[stm]
+    elif input_format == 3 or input_format == 4 or input_format == 132 or input_format == 5 or input_format == 133:
+        # Each inner array has to be reversed as these fields are in opposite endian to the planes data.
+        them_ooo_bytes = reverse_expand_bits(them_ooo)
+        us_ooo_bytes = reverse_expand_bits(us_ooo)
+        them_oo_bytes = reverse_expand_bits(them_oo)
+        us_oo_bytes = reverse_expand_bits(us_oo)
+        enpassant_bytes = reverse_expand_bits(stm)
+        middle_planes = us_ooo_bytes + (6*8*4) * b"\x00" + them_ooo_bytes + \
+            us_oo_bytes + (6*8*4) * b"\x00" + them_oo_bytes + \
+            flat_planes[0] + \
+            flat_planes[0] + \
+            (7*8*4) * b"\x00" + enpassant_bytes
+
+    # Concatenate all byteplanes. Make the last plane all 1"s so the NN can
+    # detect edges of the board more easily
+    aux_plus_6_plane = flat_planes[0]
+    if (input_format == 132
+            or input_format == 133) and invariance_info >= 128:
+        aux_plus_6_plane = flat_planes[1]
+    planes = planes.tobytes() + \
+        middle_planes + \
+        rule50_plane + \
+        aux_plus_6_plane + \
+        flat_planes[1]
+
+    assert len(planes) == ((8 * 13 * 1 + 8 * 1 * 1) * 8 * 8 * 4)
+
+    if ver == V6_VERSION or ver == V7_VERSION:
+        winner = struct.pack("fff", 0.5 * (1.0 - result_d + result_q),
+                                result_d, 0.5 * (1.0 - result_d - result_q))
+    else:
+        dep_result = float(dep_result)
+        assert dep_result == 1.0 or dep_result == -1.0 or dep_result == 0.0
+        winner = struct.pack("fff", dep_result == 1.0, dep_result == 0.0,
+                                dep_result == -1.0)
+
+    def clip(x, lo, hi):
+        return min(max(x, lo), hi)
+
+    '''        
+    def qd_to_wdl(q, d):
+        e = 1e-2
+        assert -1.0 - e <= q <= 1.0 + e and 0.0 - e <= d <= 1.0 + e
+        q = clip(q, -1.0, 1.0)
+        d = clip(d, 0.0, 1.0)
+        w = 0.5 * (1.0 - d + q)
+        l = 0.5 * (1.0 - d - q)
+        return (w, d, l)
+
+    root_wdl = struct.pack("fff", *(qd_to_wdl(root_q, root_d)))
+
+    st_wdl = struct.pack("fff", *(qd_to_wdl(st_q, st_d)))'''
+
+    def qd_to_wdl(q, d):
+        # We removed the assert. Just clip it safely.
+        q = clip(q, -1.0, 1.0)
+        d = clip(d, 0.0, 1.0)
+        w = 0.5 * (1.0 - d + q)
+        l = 0.5 * (1.0 - d - q)
+        return (w, d, l)
+
+    #if np.isnan(root_q) or np.isnan(root_d):
+    #    root_q, root_d = 0.0, 0.0
+
+    root_wdl = struct.pack("fff", *(qd_to_wdl(root_q, root_d)))
+
+    # --- THE PERMANENT NaN PATCH ---
+    # If the rescorer poisoned this game, fall back to the current evaluation.
+    #if np.isnan(st_q) or np.isnan(st_d):
+    #    st_q, st_d = root_q, root_d
+    # -------------------------------
+
+    st_wdl = struct.pack("fff", *(qd_to_wdl(st_q, st_d)))
+
+    fut = np.unpackbits(np.frombuffer(fut, dtype=np.uint8)).astype(
+        np.float32)
+
+    return (planes, probs, winner, root_wdl, plies_left, st_wdl, opp_probs, next_probs, fut)
 
 
 class ChunkParserInner:
     def __init__(self, parent, chunks, expected_input_format, shuffle_size,
                  sample, buffer_size, batch_size, diff_focus_min,
-                 diff_focus_slope, diff_focus_q_weight, diff_focus_pol_scale,
-                 workers, pc_min, pc_max):
+                 diff_focus_slope, diff_focus_q_weight, diff_focus_pol_scale, 
+                 workers, pc_min=None, pc_max=None):
         """
         Read data and yield batches of raw tensors.
 
-        'parent' the outer chunk parser to store processes. Must not be stored by self directly or indirectly.
-        'chunks' list of chunk filenames.
-        'shuffle_size' is the size of the shuffle buffer.
-        'sample' is the rate to down-sample.
-        'diff_focus_min', 'diff_focus_slope', 'diff_focus_q_weight' and 'diff_focus_pol_scale' control diff focus
-        'workers' is the number of child workers to use.
+        "parent" the outer chunk parser to store processes. Must not be stored by self directly or indirectly.
+        "chunks" list of chunk filenames.
+        "shuffle_size" is the size of the shuffle buffer.
+        "sample" is the rate to down-sample.
+        "diff_focus_min", "diff_focus_slope", "diff_focus_q_weight" and "diff_focus_pol_scale" control diff focus
+        "workers" is the number of child workers to use.
 
         The data is represented in a number of formats through this dataflow
         pipeline. In order, they are:
@@ -197,17 +421,11 @@ class ChunkParserInner:
 
         raw: A byte string holding raw tensors contenated together. This is
         used to pass data from the workers to the parent. Exists because
-        TensorFlow doesn't have a fast way to unpack bit vectors. 7950 bytes
+        TensorFlow doesn"t have a fast way to unpack bit vectors. 7950 bytes
         long.
         """
 
         self.expected_input_format = expected_input_format
-
-        # Build 2 flat float32 planes with values 0,1
-        self.flat_planes = []
-        for i in range(2):
-            self.flat_planes.append(
-                (np.zeros(64, dtype=np.float32) + i).tobytes())
 
         # set the down-sampling rate
         self.sample = sample
@@ -216,12 +434,12 @@ class ChunkParserInner:
         self.diff_focus_slope = diff_focus_slope
         self.diff_focus_q_weight = diff_focus_q_weight
         self.diff_focus_pol_scale = diff_focus_pol_scale
+        self.pc_min = pc_min
+        self.pc_max = pc_max
         # set the mini-batch size
         self.batch_size = batch_size
         # set number of elements in the shuffle buffer.
         self.shuffle_size = shuffle_size
-        self.pc_min = pc_min
-        self.pc_max = pc_max
         # Start worker processes, leave 2 for TensorFlow
         if workers is None:
             workers = max(1, mp.cpu_count() - 2)
@@ -254,131 +472,43 @@ class ChunkParserInner:
 
 
 
-    def convert_v7_to_tuple(self, content):
-        """
-        Unpack a v7 binary record to 8-tuple (state, policy pi, result, root_wdl, plies_left, st_wdl, opp_idx, next_idx)
-
-        v7 struct format is (8396 bytes total):
-                                  size         1st byte index
-        uint32_t version;                               0
-        uint32_t input_format;                          4
-        float probabilities[1858];  7432 bytes          8
-        uint64_t planes[104];        832 bytes       7440
-        ... (skipping standard bytes) ...
-        uint16_t opp_played_idx;                     8360
-        uint16_t next_played_idx;                    8362
-        float extra[8];                              8364
-        """
-        (ver, input_format, probs, planes, us_ooo, us_oo, them_ooo, them_oo,
-         stm, rule50_count, invariance_info, dep_result, root_q, best_q,
-         root_d, best_d, root_m, best_m, plies_left, result_q, result_d,
-         played_q, played_d, played_m, orig_q, orig_d, orig_m, visits,
-         played_idx, best_idx, pol_kld, st_q, st_d, opp_played_idx, next_played_idx,
-         f1, f2, f3, f4, f5, f6, f7, f8) = v7_struct.unpack(content)
-
-        if plies_left == 0:
-            plies_left = invariance_info
-        plies_left = struct.pack('f', plies_left)
-
-        assert input_format == self.expected_input_format
-
-        # Unpack bit planes and cast to 32 bit float
-        planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(
-            np.float32)
-        rule50_divisor = 99.0
-        if input_format > 3:
-            rule50_divisor = 100.0
-        rule50_plane = struct.pack('f', rule50_count / rule50_divisor) * 64
-
-        if input_format == 1:
-            middle_planes = self.flat_planes[us_ooo] + \
-                            self.flat_planes[us_oo] + \
-                            self.flat_planes[them_ooo] + \
-                            self.flat_planes[them_oo] + \
-                            self.flat_planes[stm]
-        elif input_format == 2:
-            them_ooo_bytes = reverse_expand_bits(them_ooo)
-            us_ooo_bytes = reverse_expand_bits(us_ooo)
-            them_oo_bytes = reverse_expand_bits(them_oo)
-            us_oo_bytes = reverse_expand_bits(us_oo)
-            middle_planes = us_ooo_bytes + (6*8*4) * b'\x00' + them_ooo_bytes + \
-                            us_oo_bytes + (6*8*4) * b'\x00' + them_oo_bytes + \
-                            self.flat_planes[0] + \
-                            self.flat_planes[0] + \
-                            self.flat_planes[stm]
-        elif input_format in [3, 4, 132, 5, 133]:
-            them_ooo_bytes = reverse_expand_bits(them_ooo)
-            us_ooo_bytes = reverse_expand_bits(us_ooo)
-            them_oo_bytes = reverse_expand_bits(them_oo)
-            us_oo_bytes = reverse_expand_bits(us_oo)
-            enpassant_bytes = reverse_expand_bits(stm)
-            middle_planes = us_ooo_bytes + (6*8*4) * b'\x00' + them_ooo_bytes + \
-                            us_oo_bytes + (6*8*4) * b'\x00' + them_oo_bytes + \
-                            self.flat_planes[0] + \
-                            self.flat_planes[0] + \
-                            (7*8*4) * b'\x00' + enpassant_bytes
-
-        aux_plus_6_plane = self.flat_planes[0]
-        if (input_format == 132 or input_format == 133) and invariance_info >= 128:
-            aux_plus_6_plane = self.flat_planes[1]
-            
-        planes = planes.tobytes() + \
-                 middle_planes + \
-                 rule50_plane + \
-                 aux_plus_6_plane + \
-                 self.flat_planes[1]
-
-        assert len(planes) == ((8 * 13 * 1 + 8 * 1 * 1) * 8 * 8 * 4)
-
-        if ver in [V6_VERSION, V7_VERSION]:
-            winner = struct.pack('fff', 0.5 * (1.0 - result_d + result_q),
-                                 result_d, 0.5 * (1.0 - result_d - result_q))
-        else:
-            dep_result = float(dep_result)
-            winner = struct.pack('fff', dep_result == 1.0, dep_result == 0.0, dep_result == -1.0)
-
-        def clip(x, lo, hi):
-            return min(max(x, lo), hi)
-
-        def qd_to_wdl(q, d):
-            q = clip(q, -1.0, 1.0)
-            d = clip(d, 0.0, 1.0)
-            w = 0.5 * (1.0 - d + q)
-            l = 0.5 * (1.0 - d - q)
-            return (w, d, l)
-
-        root_wdl = struct.pack('fff', *(qd_to_wdl(root_q, root_d)))
-        
-        st_wdl = struct.pack('fff', *(qd_to_wdl(st_q, st_d)))
-
-        # Pack the 16-bit opponent/next moves as 32-bit (i) integers so they align 
-        # with standard TensorFlow/NumPy 32-bit tensor arrays in batch_gen
-        opp_played_idx = struct.pack('i', opp_played_idx)
-        next_played_idx = struct.pack('i', next_played_idx)
-
-        return (planes, probs, winner, root_wdl, plies_left, st_wdl, opp_played_idx, next_played_idx)
-
     def sample_record(self, chunkdata):
         """
-        Randomly sample through the chunk data.
-        Downsampling to avoid highly correlated positions skips most records, and 
+        Randomly sample through the v3/4/5/6/7 chunk data and select records in v6 format
+        Downsampling to avoid highly correlated positions skips most records, and
         diff focus may also skip some records.
         """
         version = chunkdata[0:4]
-        if version == V7_VERSION:
-            record_size = v7_struct.size
-        elif version == V6_VERSION:
-            record_size = v6_struct.size
-        elif version == V5_VERSION:
-            record_size = v5_struct.size
-        elif version == V4_VERSION:
-            record_size = v4_struct.size
-        elif version == V3_VERSION:
-            record_size = v3_struct.size
-        else:
+        record_size = struct_sizes.get(version, None)
+        if record_size is None:
             return
+        
+        n_chunks = len(chunkdata) // record_size
+        if n_chunks == 0:
+            return
+        
+        probs = [chunkdata[i + 8:i + 8 + 1858 * 4] for i in range(0, len(chunkdata), record_size)]
+        # if there is a single legal move then the loss will be 0, so pick an arbitrary move
+        probs.extend(n_future_probs * [struct.pack("f", 1.0) + struct.pack("f", -1.0) * 1857]) 
 
-        assert (version == V7_VERSION)
+
+        white_boards = b""
+        black_boards = b""
+
+        ppb = 12
+
+        for i in range(n_chunks):
+            start = i*record_size
+            plane = chunkdata[start + 7440:start + 7440 + 8 * ppb]
+            if i % 2 == 0: # this board is from white's perspective
+                white_boards += plane
+                black_boards += reverse_board(plane)
+            else:
+                white_boards += reverse_board(plane)
+                black_boards += plane
+        white_boards += white_boards[-8*ppb:] * n_future_boards # history is the final position if game over
+        black_boards += black_boards[-8*ppb:] * n_future_boards
+        
 
         for i in range(0, len(chunkdata), record_size):
             if self.sample > 1:
@@ -389,7 +519,7 @@ class ChunkParserInner:
             idx = i//record_size
             record = chunkdata[i:i + record_size]
 
-            if version == V7_VERSION:
+            if version == V6_VERSION or version == V7_VERSION:
                 # diff focus code, peek at best_q, orig_q and pol_kld from record (unpacks as tuple with one item)
                 best_q = struct.unpack("f", record[8284:8288])[0]
                 orig_q = struct.unpack("f", record[8328:8332])[0]
@@ -432,32 +562,47 @@ class ChunkParserInner:
                     thresh_p = self.diff_focus_min + self.diff_focus_slope * total
                     if thresh_p < 1.0 and random.random() > thresh_p:
                         continue
+        
+
+            record += b"".join(probs[idx + 1: idx + 1 + n_future_probs])
+            boards = white_boards if idx % 2 == 0 else black_boards
+            record += boards[8 * ppb * idx:8 * ppb * (idx + n_future_boards)]
+
 
             yield record
 
     def single_file_gen(self, filename):
-        with gzip.open(filename, "rb") as chunk_file:
-            version = chunk_file.read(4)
-            chunk_file.seek(0)
-            if version == b'':
-                return
-            record_size = struct_sizes.get(version, None)
-            if record_size is None:
-                print("Unknown version {} in file {}".format(
-                    version, filename))
-                return
-            chunkdata = chunk_file.read()
-            for item in self.sample_record(chunkdata):
-                yield item
+        
+            with gzip.open(filename, "rb") as chunk_file:
+                version = chunk_file.read(4)
+                chunk_file.seek(0)
+                if version == b'':
+                    return
+                record_size = struct_sizes.get(version, None)
+                if record_size is None:
+                    print("Unknown version {} in file {}".format(
+                        version, filename))
+                    return
+                chunkdata = chunk_file.read()
+                for item in self.sample_record(chunkdata):
+                    yield item
 
     def sequential_gen(self):
         for filename in self.chunks:
             for item in self.single_file_gen(filename):
                 yield item
 
+    def sequential(self):
+        # read from all files in order in this process.
+        gen = self.sequential_gen()
+        gen = self.tuple_gen(gen)  # convert v7->tuple
+        gen = self.batch_gen(gen, allow_partial=False)  # assemble into batches
+        for b in gen:
+            yield b
+
     def task(self, chunk_filename_queue, writer):
         """
-        Run in fork'ed process, read data from chunkdatasrc, parsing, shuffling and
+        Run in fork"ed process, read data from chunkdatasrc, parsing, shuffling and
         sending v6 data through pipe back to main process.
         """
         while True:
@@ -465,13 +610,12 @@ class ChunkParserInner:
             for item in self.single_file_gen(filename):
                 writer.send_bytes(item)
 
-
-
     def v7_gen(self):
         """
-        Read v7 records from child workers, shuffle, and yield records.
+        Read v7 records from child workers, shuffle, and yield
+        records.
         """
-        sbuff = sb.ShuffleBuffer(v7_struct.size, self.shuffle_size)
+        sbuff = sb.ShuffleBuffer(v7b_struct.size, self.shuffle_size)
         while len(self.readers):
             for r in self.readers:
                 try:
@@ -490,14 +634,13 @@ class ChunkParserInner:
                 return
             yield s
 
-    '''
     def tuple_gen(self, gen):
         """
-        Take a generator producing v6 records and convert them to tuples.
+        Take a generator producing v7 records and convert them to tuples.
         applying a random symmetry on the way.
         """
         for r in gen:
-            yield self.convert_v6_to_tuple(r)
+            yield convert_v7b_to_tuple(r)
 
     def batch_gen(self, gen, allow_partial=True):
         """
@@ -509,65 +652,117 @@ class ChunkParserInner:
             s = list(itertools.islice(gen, self.batch_size))
             if not len(s) or (not allow_partial and len(s) != self.batch_size):
                 return
-            yield (b''.join([x[0] for x in s]), b''.join([x[1] for x in s]),
-                   b''.join([x[2] for x in s]), b''.join([x[3] for x in s]),
-                   b''.join([x[4] for x in s]))
-
-    def parse(self):
-        """
-        Read data from child workers and yield batches of unpacked records
-        """
-        gen = self.v6_gen()  # read from workers
-        gen = self.tuple_gen(gen)  # convert v6->tuple
-        gen = self.batch_gen(gen)  # assemble into batches
-        for b in gen:
-            yield b
-
-    def sequential(self):
-        gen = self.sequential_gen()  # read from all files in order in this process.
-        gen = self.tuple_gen(gen)  # convert v6->tuple
-        gen = self.batch_gen(gen, allow_partial=False)  # assemble into batches
-        for b in gen:
-            yield b
-    '''
-
-    def tuple_gen(self, gen):
-        """
-        Take a generator producing v7 records and convert them to tuples.
-        """
-        for r in gen:
-            yield self.convert_v7_to_tuple(r)
-
-    def batch_gen(self, gen, allow_partial=True):
-        """
-        Pack multiple records into a single batch dynamically based on tuple size.
-        """
-        while True:
-            s = list(itertools.islice(gen, self.batch_size))
-            if not len(s) or (not allow_partial and len(s) != self.batch_size):
-                return
-            # Dynamically handle all 8 outputs from convert_v7_to_tuple
             n_entries = len(s[0])
-            yield tuple([b''.join([x[i] for x in s]) for i in range(n_entries)])
+            yield tuple([b"".join([x[i] for x in s]) for i in range(n_entries)])
 
     def parse(self):
         """
         Read data from child workers and yield batches of unpacked records
         """
-        gen = self.v7_gen()  # read from workers (V7)
+        gen = self.v7_gen()  # read from workers
         gen = self.tuple_gen(gen)  # convert v7->tuple
         gen = self.batch_gen(gen)  # assemble into batches
         for b in gen:
             yield b
 
-    def sequential(self):
-        gen = self.sequential_gen()  # read from all files in order in this process.
-        gen = self.tuple_gen(gen)  # convert v7->tuple
-        gen = self.batch_gen(gen, allow_partial=False)  # assemble into batches
-        for b in gen:
-            yield b
+
+# # Tests to check that records parse correctly
+# class ChunkParserTest(unittest.TestCase):
+#     def setUp(self):
+#         self.v4_struct = struct.Struct(V4_STRUCT_STRING)
+
+#     def generate_fake_pos(self):
+#         """
+#         Generate a random game position.
+#         Result is ([[64] * 104], [1]*5, [1858], [1], [1])
+#         """
+#         # 0. 104 binary planes of length 64
+#         planes = [
+#             np.random.randint(2, size=64).tolist() for plane in range(104)
+#         ]
+
+#         # 1. generate the other integer data
+#         integer = np.zeros(7, dtype=np.int32)
+#         for i in range(5):
+#             integer[i] = np.random.randint(2)
+#         integer[5] = np.random.randint(100)
+
+#         # 2. 1858 probs
+#         probs = np.random.randint(9, size=1858, dtype=np.int32)
+
+#         # 3. And a winner: 1, 0, -1
+#         winner = np.random.randint(3) - 1
+
+#         # 4. evaluation after search
+#         best_q = np.random.uniform(-1, 1)
+#         best_d = np.random.uniform(0, 1 - np.abs(best_q))
+#         return (planes, integer, probs, winner, best_q, best_d)
+
+#     def v4_record(self, planes, i, probs, winner, best_q, best_d):
+#         pl = []
+#         for plane in planes:
+#             pl.append(np.packbits(plane))
+#         pl = np.array(pl).flatten().tobytes()
+#         pi = probs.tobytes()
+#         root_q, root_d = 0.0, 0.0
+#         return self.v4_struct.pack(V4_VERSION, pi, pl, i[0], i[1], i[2], i[3],
+#                                    i[4], i[5], i[6], winner, root_q, best_q,
+#                                    root_d, best_d)
+
+#     def test_structsize(self):
+#         """
+#         Test struct size
+#         """
+#         self.assertEqual(self.v4_struct.size, 8292)
+
+#     def test_parsing(self):
+#         """
+#         Test game position decoding pipeline.
+#         """
+#         truth = self.generate_fake_pos()
+#         batch_size = 4
+#         records = []
+#         for i in range(batch_size):
+#             record = b""
+#             for j in range(2):
+#                 record += self.v4_record(*truth)
+#             records.append(record)
+
+#         parser = ChunkParser(ChunkDataSrc(records),
+#                              shuffle_size=1,
+#                              workers=1,
+#                              batch_size=batch_size)
+#         batchgen = parser.parse()
+#         data = next(batchgen)
+
+#         batch = (np.reshape(np.frombuffer(data[0], dtype=np.float32),
+#                             (batch_size, 112, 64)),
+#                  np.reshape(np.frombuffer(data[1], dtype=np.int32),
+#                             (batch_size, 1858)),
+#                  np.reshape(np.frombuffer(data[2], dtype=np.float32),
+#                             (batch_size, 3)),
+#                  np.reshape(np.frombuffer(data[3], dtype=np.float32),
+#                             (batch_size, 3)))
+
+#         fltplanes = truth[1].astype(np.float32)
+#         fltplanes[5] /= 99
+#         for i in range(batch_size):
+#             data = (batch[0][i][:104],
+#                     np.array([batch[0][i][j][0] for j in range(104, 111)]),
+#                     batch[1][i], batch[2][i], batch[3][i])
+#             self.assertTrue((data[0] == truth[0]).all())
+#             self.assertTrue((data[1] == fltplanes).all())
+#             self.assertTrue((data[2] == truth[2]).all())
+#             scalar_win = data[3][0] - data[3][-1]
+#             self.assertTrue(np.abs(scalar_win - truth[3]) < 1e-6)
+#             scalar_q = data[4][0] - data[4][-1]
+#             self.assertTrue(np.abs(scalar_q - truth[4]) < 1e-6)
+
+#         parser.shutdown()
 
 
+# if __name__ == "__main__":
+#     unittest.main()
 
 
 def apply_alpha(qs, alpha, alt_signs=True):

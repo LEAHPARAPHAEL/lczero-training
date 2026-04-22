@@ -17,7 +17,7 @@
 #    along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
 import tensorflow as tf
 
-
+'''
 def parse_function(planes, probs, winner, q, plies_left, st_q, opp_probs, next_probs, fut):
     """
     Convert unpacked record batches to tensors for tensorflow training
@@ -41,9 +41,44 @@ def parse_function(planes, probs, winner, q, plies_left, st_q, opp_probs, next_p
     st_q = tf.reshape(st_q, (-1, 3))
     opp_probs = tf.reshape(opp_probs, (-1, 1858))
     next_probs = tf.reshape(next_probs, (-1, 1858))
+
+
     fut = tf.reshape(fut, (-1, 16, 12, 64))
     fut = tf.transpose(fut, perm=[0, 3, 1, 2])
     fut = tf.concat([fut, 1 - tf.reduce_sum(fut, axis=-1, keepdims=True)], axis=-1)
 
 
     return (planes, probs, winner, q, plies_left, st_q, opp_probs, next_probs, fut)
+'''
+
+def parse_function(planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx, next_idx):
+    """
+    Convert unpacked record batches to tensors for tensorflow training
+    """
+    # 1. Decode standard float targets
+    planes = tf.io.decode_raw(planes, tf.float32)
+    probs = tf.io.decode_raw(probs, tf.float32)
+    winner = tf.io.decode_raw(winner, tf.float32)
+    root_wdl = tf.io.decode_raw(root_wdl, tf.float32)
+    plies_left = tf.io.decode_raw(plies_left, tf.float32)
+    st_wdl = tf.io.decode_raw(st_wdl, tf.float32)
+
+    # 2. Decode the new integer indices (Packed as 'i' in struct)
+    opp_idx = tf.io.decode_raw(opp_idx, tf.int32)
+    next_idx = tf.io.decode_raw(next_idx, tf.int32)
+
+    # 3. Reshape floats
+    planes = tf.reshape(planes, (-1, 112, 8, 8))
+    probs = tf.reshape(probs, (-1, 1858))
+    winner = tf.reshape(winner, (-1, 3))
+    root_wdl = tf.reshape(root_wdl, (-1, 3))
+    plies_left = tf.reshape(plies_left, (-1, 1))
+    st_wdl = tf.reshape(st_wdl, (-1, 3))
+    
+    # 4. Reshape integers (1D arrays of move indices)
+    opp_idx = tf.reshape(opp_idx, (-1,))
+    next_idx = tf.reshape(next_idx, (-1,))
+
+    # Return exactly the 8 variables that process_inner_loop expects!
+    # x=planes, y=probs, z=winner, q=root_wdl, m=plies_left, st_q=st_wdl, opp_idx=opp_idx, next_idx=next_idx
+    return planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx, next_idx

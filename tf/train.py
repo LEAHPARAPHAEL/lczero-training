@@ -222,8 +222,6 @@ def main(cmd):
                                diff_focus_slope=diff_focus_slope,
                                diff_focus_q_weight=diff_focus_q_weight,
                                diff_focus_pol_scale=diff_focus_pol_scale,
-                               pc_min=pc_min,
-                               pc_max=pc_max,
                                workers=train_workers)
     test_shuffle_size = int(shuffle_size * (1.0 - train_ratio))
     # no diff focus for test_parser
@@ -232,9 +230,9 @@ def main(cmd):
                               shuffle_size=test_shuffle_size,
                               sample=SKIP,
                               batch_size=split_batch_size,
-                            #   pc_min=pc_min,
-                            #   pc_max=pc_max,
-                              workers=test_workers)
+                              workers=test_workers,
+                              pc_min = pc_min,
+                              pc_max = pc_max)
     
     
     if "input_validation" in cfg["dataset"]:
@@ -243,8 +241,8 @@ def main(cmd):
                                         get_input_mode(cfg),
                                         sample=1,
                                         batch_size=split_batch_size,
-                                        # pc_min=pc_min,
-                                        # pc_max=pc_max,
+                                        pc_min=pc_min,
+                                        pc_max=pc_max,
                                         workers=0)
 
     import tensorflow as tf
@@ -254,7 +252,7 @@ def main(cmd):
     print("Creating TFProcess")
     tfprocess = TFProcess(cfg)
     print("Done")
-    output_types = 9 * (tf.string,)
+    output_types = 8 * (tf.string,)
 
     print("Initializing datasets")
     train_dataset = tf.data.Dataset.from_generator(

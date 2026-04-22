@@ -1226,12 +1226,14 @@ class TFProcess:
         self.cfg["training"]["lr_boundaries"].sort()
         self.warmup_steps = self.cfg["training"].get("warmup_steps", 0)
         self.lr = self.cfg["training"]["lr_values"][0]
+        '''
         self.test_writer = tf.summary.create_file_writer(
             os.path.join(os.getcwd(),
                          "leelalogs/{}-test".format(self.cfg["name"])))
         self.train_writer = tf.summary.create_file_writer(
             os.path.join(os.getcwd(),
                          "leelalogs/{}-train".format(self.cfg["name"])))
+
         if vars(self).get("validation_dataset", None) is not None:
             self.validation_writer = tf.summary.create_file_writer(
                 os.path.join(
@@ -1245,6 +1247,7 @@ class TFProcess:
                 os.path.join(
                     os.getcwd(),
                     "leelalogs/{}-swa-validation".format(self.cfg["name"])))
+        '''
         self.checkpoint = tf.train.Checkpoint(optimizer=self.orig_optimizer,
                                               model=self.model,
                                               global_step=self.global_step,
@@ -1353,7 +1356,20 @@ class TFProcess:
     def restore(self):
         if self.manager.latest_checkpoint is not None:
             print("Restoring from {0}".format(self.manager.latest_checkpoint))
-            self.checkpoint.restore(self.manager.latest_checkpoint).expect_partial()
+            self.checkpoint.restore(self.manager.latest_checkpoint)
+            '''
+            dummy_x = tf.zeros((1, 112, 8, 8), dtype=self.model_dtype)
+            _ = self.model(dummy_x, training=False)
+            status = self.checkpoint.restore(self.manager.latest_checkpoint).expect_partial()
+            # 2. Force TensorFlow to crash and print the exact error if ANY variables mismatch
+            try:
+                status.assert_existing_objects_matched()
+                print("[DEBUG] SUCCESS: All model objects successfully matched and loaded from checkpoint!\n")
+            except AssertionError as e:
+                print(f"\n[FATAL RESTORE ERROR]: The checkpoint file was found, but the weights inside do not match the current model!\n{e}\n")
+                sys.exit(1)
+            '''
+            
 
     def process_loop(self, batch_size: int, test_batches: int, batch_splits: int = 1):
         if self.swa_enabled:
@@ -1618,8 +1634,7 @@ class TFProcess:
         # Run training for this batch
         grads = None
         for batch_id in range(batch_splits):
-            #x, y, z, q, m, st_q, opp_idx, next_idx = next(self.train_iter)
-            x, y, z, q, m, st_q, opp_idx, next_idx, fut = next(self.train_iter)
+            x, y, z, q, m, st_q, opp_idx, next_idx = next(self.train_iter)
             if self.strategy is not None:
                 metrics, new_grads = self.strategy_process_inner_loop(
                     x, y, z, q, m, st_q, opp_idx, next_idx)
@@ -1676,17 +1691,17 @@ class TFProcess:
             print("\n")
             print("-"*60)
             print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
+            self.log_metrics_to_file(f"\nTrain step {steps} : ")
             for metric in self.train_metrics:
-                try:
-                    print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
-                                              metric.suffix),
-                          end="\n")
-                except:
-                    print("failure to print metric", metric.short_name,
-                          metric.get(), metric.suffix)
+                print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
+                                        metric.suffix), end="\n")
+
+                self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
+
             print(" > ({:g} pos/s)".format(speed))
 
             after_weights = self.read_weights()
+            '''
             with self.train_writer.as_default():
                 for metric in self.train_metrics:
                     tf.summary.scalar(metric.long_name,
@@ -1698,6 +1713,7 @@ class TFProcess:
                                   step=steps)
                 self.compute_update_ratio(before_weights, after_weights, steps)
             self.train_writer.flush()
+            '''
 
             self.time_start = time_end
             self.last_steps = steps
@@ -1844,10 +1860,10 @@ class TFProcess:
         backup = self.read_weights()
         for (swa, w) in zip(self.swa_weights, self.model.weights):
             w.assign(swa.read_value())
-        true_test_writer, self.test_writer = self.test_writer, self.swa_writer
+        #true_test_writer, self.test_writer = self.test_writer, self.swa_writer
         print("swa", end=" ")
         self.calculate_test_summaries(test_batches, steps)
-        self.test_writer = true_test_writer
+        #self.test_writer = true_test_writer
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
@@ -1982,7 +1998,7 @@ class TFProcess:
             metric.reset()
         for _ in range(0, test_batches):
             #x, y, z, q, m, st_q, opp_idx, next_idx = next(self.test_iter)
-            x, y, z, q, m, st_q, opp_idx, next_idx, fut = next(self.test_iter)
+            x, y, z, q, m, st_q, opp_idx, next_idx = next(self.test_iter)
             if self.strategy is not None:
                 metrics = self.strategy_calculate_test_summaries_inner_loop(
                     x, y, z, q, m, st_q, opp_idx, next_idx)
@@ -1996,17 +2012,16 @@ class TFProcess:
         self.net.pb.training_params.policy_loss = self.test_metrics[0].get()
         # TODO store value and value accuracy in pb
         self.net.pb.training_params.accuracy = self.test_metrics[4].get()
+        '''
         with self.test_writer.as_default():
             for metric in self.test_metrics:
                 tf.summary.scalar(metric.long_name, metric.get(), step=steps)
             for w in self.model.weights:
                 tf.summary.histogram(w.name, w, step=steps)
-            '''
             params = self.model.count_params()
             smolgen_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "smol" in w.name])
             emb_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
             rpe_params = np.sum([K.count_params(w) for w in self.model.trainable_weights if "rpe" in w.name])
-            '''
             params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights])
             smolgen_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "smol" in w.name])
             emb_params = np.sum([np.prod(w.shape) for w in self.model.trainable_weights if "embedding/preprocess" in w.name])
@@ -2027,27 +2042,26 @@ class TFProcess:
 
 
         self.test_writer.flush()
-
+        '''
         print("\n")
         print("-"*60)
         print("Test step {}".format(steps), end="\n")
-        self.log_metrics_to_file(f"\nStep {steps}")
+        self.log_metrics_to_file(f"\nTest step {steps} :")
         for metric in self.test_metrics:
             print(" > {} = {:g}{}".format(metric.long_name, metric.get(),
                                       metric.suffix),
                   end="\n")
 
             self.log_metrics_to_file(f" > {metric.long_name} = {metric.get()}{metric.suffix}")
-        print()
 
     def calculate_swa_validations(self, steps: int):
         backup = self.read_weights()
         for (swa, w) in zip(self.swa_weights, self.model.weights):
             w.assign(swa.read_value())
-        true_validation_writer, self.validation_writer = self.validation_writer, self.swa_validation_writer
+        #true_validation_writer, self.validation_writer = self.validation_writer, self.swa_validation_writer
         print("swa", end=" ")
         self.calculate_test_validations(steps)
-        self.validation_writer = true_validation_writer
+        #self.validation_writer = true_validation_writer
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
@@ -2064,10 +2078,12 @@ class TFProcess:
                     x, y, z, q, m, st_q, opp_idx, next_idx)
             for acc, val in zip(self.test_metrics, metrics):
                 acc.accumulate(val)
+        '''
         with self.validation_writer.as_default():
             for metric in self.test_metrics:
                 tf.summary.scalar(metric.long_name, metric.get(), step=steps)
         self.validation_writer.flush()
+        '''
 
         print("step {}, validation:".format(steps), end="")
         for metric in self.test_metrics:
@@ -2536,46 +2552,6 @@ class TFProcess:
             'policy_opponent', False) else None
         policy_next = future_head(name="policy/next") if self.cfg['model'].get(
             'policy_next', False) else None
-
-        '''
-        def value_head(name, wdl=True, use_err=True, use_cat=True):
-            embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
-                                                 activation=self.DEFAULT_ACTIVATION,
-                                                 name=name+"/embedding")(flow)
-
-            h_val_flat = tf.keras.layers.Flatten()(embedded_val)
-            h_fc2 = tf.keras.layers.Dense(128,
-                                          kernel_initializer="glorot_normal",
-                                          activation=self.DEFAULT_ACTIVATION,
-                                          name=name+"/dense1")(h_val_flat)
-
-            # WDL head
-            if wdl:
-                value = tf.keras.layers.Dense(3,
-                                              kernel_initializer="glorot_normal",
-                                              name=name+"/dense2")(h_fc2)
-            else:
-                value = tf.keras.layers.Dense(1,
-                                              kernel_initializer="glorot_normal",
-                                              activation="tanh",
-                                              name=name+"/dense2")(h_fc2)
-
-            if use_err:
-                # Shouldn't be more than 1
-                value_err = tf.keras.layers.Dense(
-                    1, kernel_initializer="glorot_normal", name=name+"/dense_error", activation="sigmoid")(h_fc2)
-            else:
-                value_err = None
-
-            if use_cat and self.categorical_value_buckets:
-                value_cat = tf.keras.layers.Dense(
-                    self.categorical_value_buckets, kernel_initializer="glorot_normal", name=name+"/dense_cat")(h_fc2)
-            else:
-                value_cat = None
-
-            return value, value_err, value_cat
-        '''
-        
         
         def value_head(name, wdl=True, use_err=True, use_cat=True):
             embedded_val = tf.keras.layers.Dense(self.val_embedding_size, kernel_initializer="glorot_normal",
@@ -2640,13 +2616,6 @@ class TFProcess:
                 name=name+"moves_left/dense1")(h_mov_flat)
         
 
-            '''
-            moves_left = tf.keras.layers.Dense(1,
-                                               kernel_initializer="glorot_normal",
-                                               activation="relu",
-                                               name=name+"moves_left/dense2")(h_fc4)
-            '''
-            
             moves_left = tf.keras.layers.Dense(1,
                                                kernel_initializer="glorot_normal",
                                                activation="relu",
@@ -2697,7 +2666,6 @@ class TFProcess:
                 # for t in outputs[key]:
                 #     out.append(tf.cast(t, tf.float32))
                 # outputs[key] = out
-
         return outputs
 
     def set_sparsity_patterns(self):
