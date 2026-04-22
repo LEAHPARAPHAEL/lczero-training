@@ -40,7 +40,7 @@ training:
     # validation_steps: 5000
     num_test_positions: 50_000
     train_avg_report_steps: 2_000
-    total_steps: 100_000
+    total_steps: 150_000
     checkpoint_steps: 10_000
     shuffle_size: 100_000
     warmup_steps: 1_000
@@ -50,8 +50,8 @@ training:
         - 0.0005
         - 0.0001
     lr_boundaries:
-        - 80_000
-        - 90_000
+        - 120_000
+        - 140_000
     loss_weights:
         policy: 1.0
         policy_optimistic_st: 0.0
