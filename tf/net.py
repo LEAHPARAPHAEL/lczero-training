@@ -59,6 +59,9 @@ class Net:
         if net == pb.NetworkFormat.NETWORK_ATTENTIONBODY_WITH_HEADFORMAT \
                 and self.pb.min_version.minor < LC0_MINOR_WITH_ATTN_BODY:
             self.pb.min_version.minor = LC0_MINOR_WITH_ATTN_BODY
+        if net == pb.NetworkFormat.NETWORK_ATTENTIONBODY_WITH_MULTIHEADFORMAT \
+                and self.pb.min_version.minor < LC0_MINOR_WITH_MULTIHEAD:
+            self.pb.min_version.minor = LC0_MINOR_WITH_MULTIHEAD
 
     def set_policyformat(self, policy):
         self.pb.format.network_format.policy = policy
@@ -111,6 +114,8 @@ class Net:
     
     def set_input_embedding(self, embedding):
         self.pb.format.network_format.input_embedding = embedding
+        if self.pb.min_version.minor < LC0_MINOR_WITH_MULTIHEAD:
+            self.pb.min_version.minor = LC0_MINOR_WITH_MULTIHEAD
 
     def set_attention_masks(self, mask_rules):
         del self.pb.format.network_format.attention_masks[:]
@@ -188,31 +193,6 @@ class Net:
         params = np.round(params)
         layer.params = params.astype(np.uint16).tobytes()
 
-    def fill_conv_block(self, convblock, weights, gammas):
-        """Normalize and populate 16bit convblock in protobuf"""
-        if gammas:
-            self.fill_layer(convblock.bn_stddivs, weights)
-            self.fill_layer(convblock.bn_means, weights)
-            self.fill_layer(convblock.bn_betas, weights)
-            self.fill_layer(convblock.bn_gammas, weights)
-            self.fill_layer(convblock.weights, weights)
-        else:
-            self.fill_layer(convblock.bn_stddivs, weights)
-            self.fill_layer(convblock.bn_means, weights)
-            self.fill_layer(convblock.biases, weights)
-            self.fill_layer(convblock.weights, weights)
-
-    def fill_plain_conv(self, convblock, weights):
-        """Normalize and populate 16bit convblock in protobuf"""
-        self.fill_layer(convblock.biases, weights)
-        self.fill_layer(convblock.weights, weights)
-
-    def fill_se_unit(self, se_unit, weights):
-        self.fill_layer(se_unit.b2, weights)
-        self.fill_layer(se_unit.w2, weights)
-        self.fill_layer(se_unit.b1, weights)
-        self.fill_layer(se_unit.w1, weights)
-
     def denorm_layer_v2(self, layer):
         """Denormalize a layer from protobuf"""
         params = np.frombuffer(layer.params, np.uint16).astype(np.float32)
@@ -221,63 +201,6 @@ class Net:
 
     def denorm_layer(self, layer, weights):
         weights.insert(0, self.denorm_layer_v2(layer))
-
-    def denorm_conv_block(self, convblock, weights):
-        """Denormalize a convblock from protobuf"""
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-
-        if se:
-            self.denorm_layer(convblock.bn_stddivs, weights)
-            self.denorm_layer(convblock.bn_means, weights)
-            self.denorm_layer(convblock.bn_betas, weights)
-            self.denorm_layer(convblock.bn_gammas, weights)
-            self.denorm_layer(convblock.weights, weights)
-        else:
-            self.denorm_layer(convblock.bn_stddivs, weights)
-            self.denorm_layer(convblock.bn_means, weights)
-            self.denorm_layer(convblock.biases, weights)
-            self.denorm_layer(convblock.weights, weights)
-
-    def denorm_plain_conv(self, convblock, weights):
-        """Denormalize a plain convolution from protobuf"""
-        self.denorm_layer(convblock.biases, weights)
-        self.denorm_layer(convblock.weights, weights)
-
-    def denorm_se_unit(self, convblock, weights):
-        """Denormalize SE-unit from protobuf"""
-        se = self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT
-
-        assert se
-
-        self.denorm_layer(convblock.b2, weights)
-        self.denorm_layer(convblock.w2, weights)
-        self.denorm_layer(convblock.b1, weights)
-        self.denorm_layer(convblock.w1, weights)
-
-    def save_txt(self, filename):
-        """Save weights as txt file"""
-        weights = self.get_weights()
-
-        if len(filename.split('.')) == 1:
-            filename += ".txt.gz"
-
-        # Legacy .txt files are version 2, SE is version 3.
-
-        version = 2
-        if self.pb.format.network_format.network == pb.NetworkFormat.NETWORK_SE_WITH_HEADFORMAT:
-            version = 3
-
-        if self.pb.format.network_format.policy == pb.NetworkFormat.POLICY_CONVOLUTION:
-            version = 4
-
-        with gzip.open(filename, 'wb') as f:
-            f.write("{}\n".format(version).encode('utf-8'))
-            for row in weights:
-                f.write(
-                    (" ".join(map(str, row.tolist())) + "\n").encode('utf-8'))
-
-        size = os.path.getsize(filename) / 1024**2
-        print("saved as '{}' {}M".format(filename, round(size, 2)))
 
     def save_proto(self, filename):
         """Save weights gzipped protobuf file"""
@@ -294,7 +217,28 @@ class Net:
     def tf_name_to_pb_name(self, name):
         """Given Tensorflow variable name returns the protobuf name and index
         of residual block if weight belong in a residual block."""
+        def value_to_bp(l, w):
+            if l == 'dense_error':
+                w = w.split(':')[0]
+                d = {'kernel': 'ip_val_err_w', 'bias': 'ip_val_err_b'}
+                return d[w]
+            elif l == 'dense_cat':
+                w = w.split(':')[0]
+                d = {'kernel': 'ip_val_cat_w', 'bias': 'ip_val_cat_b'}
+                return d[w]
+            if l == 'embedding':
+                n = ''
+            elif l == 'dense1':
+                n = 1
+            elif l == 'dense2':
+                n = 2
+            else:
+                raise ValueError('Unable to decode value weight {}/{}'.format(
+                    l, w))
+            w = w.split(':')[0]
+            d = {'kernel': 'ip{}_val_w', 'bias': 'ip{}_val_b'}
 
+            return d[w].format(n)
         def convblock_to_bp(w):
             w = w.split(':')[0]
             d = {
