@@ -41,7 +41,7 @@ training:
     num_test_positions: 50_000
     train_avg_report_steps: 1_000
     total_steps: 100_000
-    checkpoint_steps: 10_000
+    checkpoint_steps: 100
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true

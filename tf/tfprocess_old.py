@@ -846,6 +846,10 @@ class TFProcess:
             if n_buckets is None:
                 n_buckets = self.categorical_value_buckets
             
+            # --- FP32 CAST ---
+            # Cast immediately to float32 so the boundary math doesn't underflow
+            x = tf.cast(x, tf.float32)
+            
             # Use a safe float32 epsilon instead of 1e-9
             epsilon = 1e-5
             x = tf.clip_by_value(x, lo, hi - epsilon)
@@ -1061,6 +1065,7 @@ class TFProcess:
         self.mse_loss_fn = mse_loss
 
         def value_loss(target, output):
+            output = tf.cast(output, tf.float32)
             if output.shape[-1] == 1:
                 return mse_loss(target, output)
             else:
@@ -1251,7 +1256,7 @@ class TFProcess:
         self.manager = tf.train.CheckpointManager(
             self.checkpoint,
             directory=self.root_dir,
-            max_to_keep=10,
+            max_to_keep=50,
             keep_checkpoint_every_n_hours=24,
             checkpoint_name=self.cfg["name"])
 
@@ -1824,7 +1829,7 @@ class TFProcess:
 
             # === 1. STANDARD WEIGHTS SAVING ===
             # Save standard TensorFlow format
-            #tf.saved_model.save(self.model, leela_path)
+            tf.saved_model.save(self.model, leela_path)
             
             # Save playable Leela .pb format
             if not self.cfg["training"].get("disable_pb_checkpointing"):
@@ -2516,12 +2521,9 @@ class TFProcess:
             attn_wts.append(promotion_logits)
             attn_wts.append(policy_attn_logits)
 
-            promotion_logits = tf.cast(promotion_logits, tf.float32)
-            policy_attn_logits = tf.cast(policy_attn_logits, tf.float32)
-
             # APPLY POLICY MAP: output becomes Bx1856
             h_fc1 = ApplyAttentionPolicyMap(
-                name=name+"/attention_map", dtype = tf.float32)(policy_attn_logits, promotion_logits)
+                name=name+"/attention_map")(policy_attn_logits, promotion_logits)
 
             if activation is not None:
                 h_fc1 = tf.keras.layers.Activation(activation)(h_fc1)
@@ -2654,6 +2656,16 @@ class TFProcess:
         for key in none_keys:
             del outputs[key]
 
+        for key in outputs:
+            try:
+                outputs[key] = tf.cast(outputs[key], tf.float32)
+            except:
+                assert key == "attn_wts"
+                # don't want to cast since the memory will jump
+                # out = []
+                # for t in outputs[key]:
+                #     out.append(tf.cast(t, tf.float32))
+                # outputs[key] = out
         return outputs
 
     def set_sparsity_patterns(self):
