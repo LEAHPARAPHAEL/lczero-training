@@ -33,13 +33,13 @@ training:
     renorm: false
     renorm_max_r: 1.0
     renorm_max_d: 0.0
-    test_steps: 1_000
+    test_steps: 2_000
     disable_pb_checkpointing: false
     checkpoint_activations: false
 
     # validation_steps: 5000
     num_test_positions: 50_000
-    train_avg_report_steps: 1_000
+    train_avg_report_steps: 2_000
     total_steps: 100_000
     checkpoint_steps: 10_000
     shuffle_size: 100_000
