@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "BT4-8x256x8h-crbk"
+name: "8x384x12h"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -23,8 +23,8 @@ training:
     max_grad_norm: 3.0
     batch_size: 512
     num_batch_splits: 1
-    diff_focus_min: 0.025
-    diff_focus_slope: 3.0
+    #diff_focus_min: 0.025
+    #diff_focus_slope: 3.0
     lookahead_optimizer: false
     renorm: true
     renorm_max_r: 1.0
@@ -34,7 +34,7 @@ training:
     checkpoint_activations: false
     num_test_positions: 50_000
     train_avg_report_steps: 2_000
-    total_steps: 500_000
+    total_steps: 200_000
     checkpoint_steps: 10_000
     shuffle_size: 100_000
     warmup_steps: 1_000
@@ -78,7 +78,7 @@ model:
     value_embedding_size: 64
     moves_left_embedding_size: 32
     encoder_layers: 8                   # number of intermediate attention layers in the policy head
-    encoder_heads: 16                     # number of attention heads in encoder layers, emb // (32 or 64) recommended
+    encoder_heads: 12                     # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
     encoder_d_model: 384                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
     encoder_dff: 512                    # size of the expansion layer in encoder layer ffn
