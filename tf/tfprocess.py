@@ -867,7 +867,7 @@ class TFProcess:
                 
             # --- THE SAFETY MASK ---
             # If an anomaly still creates an Inf/NaN, mask it to 0.0 to save the batch
-            loss = tf.where(tf.math.is_finite(loss), loss, tf.zeros_like(loss))
+            #loss = tf.where(tf.math.is_finite(loss), loss, tf.zeros_like(loss))
             
             return tf.reduce_mean(loss)
 
@@ -915,7 +915,7 @@ class TFProcess:
                 target_d = tf.reverse(target_d, axis=[-1])
             output_u, output_d = tf.split(output, 2, axis=-1)
             output_u, output_d = tf.squeeze(output_u), tf.squeeze(output_d)
-            print(output_u.shape, output_d.shape, target_u.shape, target_d.shape)
+            #print(output_u.shape, output_d.shape, target_u.shape, target_d.shape)
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target_u), logits=output_u)
                 + tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target_d), logits=output_d))
             return loss

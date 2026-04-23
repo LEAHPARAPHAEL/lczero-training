@@ -1,0 +1,111 @@
+%YAML 1.2
+--- 
+name: "BT4-1024x15x32h"
+gpu: all
+dataset:
+  num_chunks: 500_000_000
+  allow_less_chunks: true
+  train_ratio: 0.95
+  sort_type: name
+  input_train: 
+    - "/mnt/rescored-data/*/"
+  input_test:
+    - "/mnt/test-data/*/"
+  input_validation:
+    - "/mnt/validation-data/"
+  experimental_v5_only_dataset: false
+  train_workers: 95
+  test_workers: 4
+training:
+    precision: half
+    swa: false
+    swa_output: false
+    swa_max_n: 10
+    swa_steps: 100
+    max_grad_norm: 10.0
+    batch_size: 512
+    num_batch_splits: 1
+    q_ratio: 0
+    diff_focus_min: 0.025
+    diff_focus_slope: 3.0
+    lookahead_optimizer: false
+    renorm: true
+    renorm_max_r: 1.0
+    renorm_max_d: 0.0
+    test_steps: 1000
+    validation_steps: 2000
+    num_test_positions: 131_072
+    train_avg_report_steps: 500
+    total_steps: 200_000_000
+    checkpoint_steps: 5_000
+    shuffle_size: 1_000_000
+    warmup_steps: 2000
+    mask_legal_moves: true
+    lr_values: # schedule is likely outdated
+        - 0.001
+        - 0.001
+    lr_boundaries:
+        - 100
+    loss_weights:
+        policy: 1.0
+        policy_optimistic_st: 3.0
+        policy_soft: 8.0 # loss is much smaller at optimum
+        policy_opponent: 0.1
+        policy_next: 0.1
+        value_winner: 1.0
+        value_q: 1.0
+        value_q_cat: 0.1
+        value_st: 1.0 # larger because mse loss
+        value_q_err: 20.0  # both error weights should be the same
+        value_st_err: 20.0
+        value_st_cat: 1.0
+        moves_left: 1.0
+        reg: 1.0
+
+    path: "/mnt/networks"
+
+    optimizer: nadam # sgd/nadam/rmsprop/adabelief
+    beta_1: 0.9 
+    beta_2: 0.98  # these values are only for Nadam
+    epsilon: 0.00000001 # 1e-7
+    sparse: false
+
+model:              
+    embedding_size: 1024
+    policy_embedding_size: 1024
+    value_embedding_size: 128
+    moves_left_embedding_size: 32
+    encoder_layers: 15                   # number of intermediate attention layers in the policy head
+    encoder_heads: 32                     # number of attention heads in encoder layers, emb // (32 or 64) recommended
+                                         # with 64 memory is same as embedding, with 32 is double
+    encoder_d_model: 1024                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
+    encoder_dff: 1536                    # size of the expansion layer in encoder layer ffn
+    policy_d_model: 1024                  # size of the query and key vectors in final attention layer
+    policy_d_aux: 256
+    dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
+                                        # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
+    
+    embedding_dense_sz: 512           # number of params added is 50k times this number so care is needed
+    embedding_style: "new"
+
+    
+    value: "wdl"
+    moves_left: "v1"
+    input_type: "classic"
+
+    # smolgen: more efficient version of fullgen, adds a lot of params
+    use_smolgen: true
+    smolgen_hidden_channels: 32
+    smolgen_hidden_sz: 256
+    smolgen_gen_sz: 256
+    smolgen_activation: "swish"
+
+    # Enable or disable BT3 features
+    policy_optimistic_st: true
+    policy_opponent: true
+    policy_next: true
+    value_st: true
+    value_q: true
+    soft_policy: true
+    categorical_value_buckets: 32
+    soft_policy_temperature: 4.0
