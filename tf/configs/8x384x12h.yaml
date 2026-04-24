@@ -65,7 +65,7 @@ training:
 
     optimizer: nadam # sgd/nadam/rmsprop/adabelief
     beta_1: 0.9 
-    beta_2: 0.98  # these values are only for Nadam
+    beta_2: 0.999  # these values are only for Nadam
     epsilon: 0.00001 # 1e-7
     sparse: false
 
