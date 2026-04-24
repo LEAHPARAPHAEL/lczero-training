@@ -74,19 +74,24 @@ CLASSICAL_INPUT = struct.pack('i', 1)
 V4_VERSION = struct.pack('i', 4)
 V3_VERSION = struct.pack('i', 3)
 V7_VERSION = struct.pack('i', 7)
+V7B_VERSION = struct.pack('i', 70)
 V6_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffffffffffffIHH4H'
 V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
+V7B_STRUCT_STRING = V7_STRUCT_STRING + "7432s7432s"
 V5_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffff'
 V4_STRUCT_STRING = '4s7432s832sBBBBBBBbffff'
 V3_STRUCT_STRING = '4s7432s832sBBBBBBBb'
 
+
 v7_struct = struct.Struct(V7_STRUCT_STRING)
+v7b_struct = struct.Struct(V7B_STRUCT_STRING)
 v6_struct = struct.Struct(V6_STRUCT_STRING)
 v5_struct = struct.Struct(V5_STRUCT_STRING)
 v4_struct = struct.Struct(V4_STRUCT_STRING)
 v3_struct = struct.Struct(V3_STRUCT_STRING)
 
 struct_sizes = {V7_VERSION: v7_struct.size,
+                V7B_VERSION : v7b_struct.size,
                 V6_VERSION: v6_struct.size, V5_VERSION: v5_struct.size,
                 V4_VERSION: v4_struct.size, V3_VERSION: v3_struct.size}
 
@@ -274,7 +279,7 @@ class ChunkParserInner:
          root_d, best_d, root_m, best_m, plies_left, result_q, result_d,
          played_q, played_d, played_m, orig_q, orig_d, orig_m, visits,
          played_idx, best_idx, pol_kld, st_q, st_d, opp_played_idx, next_played_idx,
-         f1, f2, f3, f4, f5, f6, f7, f8) = v7_struct.unpack(content)
+         f1, f2, f3, f4, f5, f6, f7, f8, opp_probs, next_probs) = v7b_struct.unpack(content)
 
         if plies_left == 0:
             plies_left = invariance_info
@@ -356,7 +361,7 @@ class ChunkParserInner:
         opp_played_idx = struct.pack('i', opp_played_idx)
         next_played_idx = struct.pack('i', next_played_idx)
 
-        return (planes, probs, winner, root_wdl, plies_left, st_wdl, opp_played_idx, next_played_idx)
+        return (planes, probs, winner, root_wdl, plies_left, st_wdl, opp_probs, next_probs)
 
     def sample_record(self, chunkdata):
         """
@@ -365,20 +370,12 @@ class ChunkParserInner:
         diff focus may also skip some records.
         """
         version = chunkdata[0:4]
-        if version == V7_VERSION:
-            record_size = v7_struct.size
-        elif version == V6_VERSION:
-            record_size = v6_struct.size
-        elif version == V5_VERSION:
-            record_size = v5_struct.size
-        elif version == V4_VERSION:
-            record_size = v4_struct.size
-        elif version == V3_VERSION:
-            record_size = v3_struct.size
-        else:
-            return
-
         assert (version == V7_VERSION)
+        record_size = v7_struct.size
+
+        probs = [chunkdata[i + 8:i + 8 + 1858 * 4] for i in range(0, len(chunkdata), record_size)]
+        
+        probs.extend(2 * [struct.pack("f", 1.0) + struct.pack("f", -1.0) * 1857])
 
         for i in range(0, len(chunkdata), record_size):
             if self.sample > 1:
@@ -389,49 +386,50 @@ class ChunkParserInner:
             idx = i//record_size
             record = chunkdata[i:i + record_size]
 
-            if version == V7_VERSION:
-                # diff focus code, peek at best_q, orig_q and pol_kld from record (unpacks as tuple with one item)
-                best_q = struct.unpack("f", record[8284:8288])[0]
-                orig_q = struct.unpack("f", record[8328:8332])[0]
-                pol_kld = struct.unpack("f", record[8348:8352])[0]
+            # diff focus code, peek at best_q, orig_q and pol_kld from record (unpacks as tuple with one item)
+            best_q = struct.unpack("f", record[8284:8288])[0]
+            orig_q = struct.unpack("f", record[8328:8332])[0]
+            pol_kld = struct.unpack("f", record[8348:8352])[0]
 
-                # if orig_q is NaN or pol_kld is 0, accept, else accept based on diff focus
-                root_q = struct.unpack("f", record[8280:8284])[0]
-                root_d = struct.unpack("f", record[8288:8292])[0]
-                plies_left = struct.unpack("f", record[8304:8308])[0]
-                st_q = struct.unpack("f", record[8352:8356])[0]
-                st_d = struct.unpack("f", record[8356:8360])[0]
+            # if orig_q is NaN or pol_kld is 0, accept, else accept based on diff focus
+            root_q = struct.unpack("f", record[8280:8284])[0]
+            root_d = struct.unpack("f", record[8288:8292])[0]
+            plies_left = struct.unpack("f", record[8304:8308])[0]
+            st_q = struct.unpack("f", record[8352:8356])[0]
+            st_d = struct.unpack("f", record[8356:8360])[0]
 
-                # If any of these training targets are corrupted, drop the position instantly
-                if (np.isnan(plies_left) or 
-                    np.isnan(st_q) or np.isnan(st_d) or 
-                    np.isnan(root_q) or np.isnan(root_d)):
+            # If any of these training targets are corrupted, drop the position instantly
+            if (np.isnan(plies_left) or 
+                np.isnan(st_q) or np.isnan(st_d) or 
+                np.isnan(root_q) or np.isnan(root_d)):
+                continue
+
+            try:
+                if self.pc_min is not None or self.pc_max is not None:
+                    
+                    planes = record[7440: 7440+104]
+                    planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(np.uint8)
+                    planes = np.reshape(planes, [13, 64])
+                    # pieces are listed our PNBRQKpnbrqk
+                    pc = np.sum(planes[1:5, :]) + np.sum(planes[7:11, :])
+                    if self.pc_min is not None and pc < self.pc_min:
+                        continue
+                    if self.pc_max is not None and pc > self.pc_max:
+                        continue
+            except Exception as e:
+                print(e)
+
+            if not np.isnan(orig_q) and pol_kld > 0:
+                diff_q = abs(best_q - orig_q)
+                q_weight = self.diff_focus_q_weight
+                pol_scale = self.diff_focus_pol_scale
+                total = (q_weight * diff_q + pol_kld) / (q_weight +
+                                                            pol_scale)
+                thresh_p = self.diff_focus_min + self.diff_focus_slope * total
+                if thresh_p < 1.0 and random.random() > thresh_p:
                     continue
 
-                try:
-                    if self.pc_min is not None or self.pc_max is not None:
-                        
-                        planes = record[7440: 7440+104]
-                        planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(np.uint8)
-                        planes = np.reshape(planes, [13, 64])
-                        # pieces are listed our PNBRQKpnbrqk
-                        pc = np.sum(planes[1:5, :]) + np.sum(planes[7:11, :])
-                        if self.pc_min is not None and pc < self.pc_min:
-                            continue
-                        if self.pc_max is not None and pc > self.pc_max:
-                            continue
-                except Exception as e:
-                    print(e)
-
-                if not np.isnan(orig_q) and pol_kld > 0:
-                    diff_q = abs(best_q - orig_q)
-                    q_weight = self.diff_focus_q_weight
-                    pol_scale = self.diff_focus_pol_scale
-                    total = (q_weight * diff_q + pol_kld) / (q_weight +
-                                                             pol_scale)
-                    thresh_p = self.diff_focus_min + self.diff_focus_slope * total
-                    if thresh_p < 1.0 and random.random() > thresh_p:
-                        continue
+            record += b"".join(probs[idx + 1 : idx + 3])
 
             yield record
 
@@ -471,7 +469,7 @@ class ChunkParserInner:
         """
         Read v7 records from child workers, shuffle, and yield records.
         """
-        sbuff = sb.ShuffleBuffer(v7_struct.size, self.shuffle_size)
+        sbuff = sb.ShuffleBuffer(v7b_struct.size, self.shuffle_size)
         while len(self.readers):
             for r in self.readers:
                 try:

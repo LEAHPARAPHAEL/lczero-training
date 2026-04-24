@@ -46,17 +46,17 @@ training:
         - 100
     loss_weights:
         policy: 1.0
-        policy_optimistic_st: 3.0
+        policy_optimistic_st: 1.0
         policy_soft: 8.0 # loss is much smaller at optimum
-        policy_opponent: 0.1
+        policy_opponent: 1.0
         policy_next: 0.0
         value_winner: 1.0
         value_q: 1.0
         value_q_cat: 0.1
         value_st: 1.0 # larger because mse loss
-        value_q_err: 20.0  # both error weights should be the same
-        value_st_err: 20.0
-        value_st_cat: 1.0
+        value_q_err: 1.0  # both error weights should be the same
+        value_st_err: 1.0
+        value_st_cat: 0.1
         moves_left: 1.0
         reg: 1.0
 
@@ -83,7 +83,10 @@ model:
     encoder_d_model: 384                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
     encoder_dff: 512                    # size of the expansion layer in encoder layer ffn
     policy_d_model: 384                  # size of the query and key vectors in final attention layer
-    policy_d_aux: 256
+    policy_d_opt: 384
+    policy_d_soft: 256
+    policy_d_opponent: 256
+    policy_d_next: 256
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 

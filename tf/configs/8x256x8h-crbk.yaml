@@ -93,7 +93,10 @@ model:
     encoder_d_model: 256                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
     encoder_dff: 256                    # size of the expansion layer in encoder layer ffn
     policy_d_model: 256                  # size of the query and key vectors in final attention layer
-    policy_d_aux: 256                     # size of the query and key vectors for auxiliary layers
+    policy_d_opt: 256
+    policy_d_soft: 256
+    policy_d_opponent: 256
+    policy_d_next: 256                    # size of the query and key vectors for auxiliary layers
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 

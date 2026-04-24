@@ -51,7 +51,7 @@ def parse_function(planes, probs, winner, q, plies_left, st_q, opp_probs, next_p
     return (planes, probs, winner, q, plies_left, st_q, opp_probs, next_probs, fut)
 '''
 
-def parse_function(planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx, next_idx):
+def parse_function(planes, probs, winner, root_wdl, plies_left, st_wdl, opp_probs, next_probs):
     """
     Convert unpacked record batches to tensors for tensorflow training
     """
@@ -63,10 +63,8 @@ def parse_function(planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx,
     plies_left = tf.io.decode_raw(plies_left, tf.float32)
     st_wdl = tf.io.decode_raw(st_wdl, tf.float32)
 
-    # 2. Decode the new integer indices (Packed as 'i' in struct)
-    opp_idx = tf.io.decode_raw(opp_idx, tf.int32)
-    next_idx = tf.io.decode_raw(next_idx, tf.int32)
-
+    opp_probs = tf.io.decode_raw(opp_probs, tf.float32)
+    next_probs = tf.io.decode_raw(next_probs, tf.float32)
     # 3. Reshape floats
     planes = tf.reshape(planes, (-1, 112, 8, 8))
     probs = tf.reshape(probs, (-1, 1858))
@@ -75,10 +73,9 @@ def parse_function(planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx,
     plies_left = tf.reshape(plies_left, (-1, 1))
     st_wdl = tf.reshape(st_wdl, (-1, 3))
     
-    # 4. Reshape integers (1D arrays of move indices)
-    opp_idx = tf.reshape(opp_idx, (-1,))
-    next_idx = tf.reshape(next_idx, (-1,))
+    opp_probs = tf.reshape(opp_probs, (-1, 1858))
+    next_probs = tf.reshape(next_probs, (-1, 1858))
 
     # Return exactly the 8 variables that process_inner_loop expects!
     # x=planes, y=probs, z=winner, q=root_wdl, m=plies_left, st_q=st_wdl, opp_idx=opp_idx, next_idx=next_idx
-    return planes, probs, winner, root_wdl, plies_left, st_wdl, opp_idx, next_idx
+    return planes, probs, winner, root_wdl, plies_left, st_wdl, opp_probs, next_probs
