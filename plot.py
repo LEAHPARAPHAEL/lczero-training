@@ -108,7 +108,8 @@ if __name__ == "__main__":
     # 1. List of paths to your models' log files
     MODELS_LOG_PATHS = [
         "/home/raph/leela/logs/8x256x8h.txt",
-        "/home/raph/leela/logs/8x256x8h-crbk.txt"
+        "/home/raph/leela/logs/8x256x8h-crbk.txt",
+        "/home/raph/leela/logs/8x256x8h-2c2r2b2k.txt"
     ]
 
     # 2. List of metrics to plot (Set to None to plot ALL found metrics)
