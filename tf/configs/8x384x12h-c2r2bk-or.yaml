@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "8x384x12h-c2r2bk"
+name: "8x384x12h-c2r2bk-or"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -138,12 +138,16 @@ model:
       - piece: "color"
         heads: [0]
         layers: 'all'
+        override_smolgen: True
       - piece: "rook"
         heads: [1,2]
         layers: 'all'
+        override_smolgen: True
       - piece: "bishop"
         heads: [3,4]
         layers: 'all' 
+        override_smolgen: True
       - piece: "knight"
         heads: [5]
         layers: 'all' 
+        override_smolgen: True

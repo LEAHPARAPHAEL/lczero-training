@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "8x384x12h-c2r2bk"
+name: "8x384x12h-crbk"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -139,11 +139,11 @@ model:
         heads: [0]
         layers: 'all'
       - piece: "rook"
-        heads: [1,2]
+        heads: [1]
         layers: 'all'
       - piece: "bishop"
-        heads: [3,4]
+        heads: [2]
         layers: 'all' 
       - piece: "knight"
-        heads: [5]
+        heads: [3]
         layers: 'all' 

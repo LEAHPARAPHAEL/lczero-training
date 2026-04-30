@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "8x384x12h-c2r2bk"
+name: "8x384x12h-c2r2bk-noS"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -99,7 +99,7 @@ model:
     input_type: "classic"
 
     # smolgen: more efficient version of fullgen, adds a lot of params
-    use_smolgen: true
+    use_smolgen: false
     smolgen_hidden_channels: 8
     smolgen_hidden_sz: 64
     smolgen_gen_sz: 64

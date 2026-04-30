@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "8x384x12h-c2r2bk"
+name: "8x384x12h-2res"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -23,13 +23,14 @@ training:
     max_grad_norm: 3.0
     batch_size: 512
     num_batch_splits: 1
+    virtual_batch_size: null
     #diff_focus_min: 0.025
     #diff_focus_slope: 3.0
     lookahead_optimizer: false
-    renorm: true
+    renorm: false
     renorm_max_r: 1.0
     renorm_max_d: 0.0
-    test_steps: 2000
+    test_steps: 2_000
     disable_pb_checkpointing: false
     checkpoint_activations: false
     num_test_positions: 50_000
@@ -91,7 +92,7 @@ model:
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 
     embedding_dense_sz: 128           # number of params added is 50k times this number so care is needed
-    embedding_style: "new"
+    embedding_style: "conv"
 
     
     value: "wdl"
@@ -134,16 +135,9 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    attention_masks:
-      - piece: "color"
-        heads: [0]
-        layers: 'all'
-      - piece: "rook"
-        heads: [1,2]
-        layers: 'all'
-      - piece: "bishop"
-        heads: [3,4]
-        layers: 'all' 
-      - piece: "knight"
-        heads: [5]
-        layers: 'all' 
+    se_ratio: 4
+    mask_type: "rbk"
+    residual_layers: 2
+    residual_filters: 128
+    expanded_ratio: 6
+    residual_layer_type: "standard"

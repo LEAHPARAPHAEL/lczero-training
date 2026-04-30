@@ -28,7 +28,6 @@ from functools import reduce
 import operator
 import functools
 from net import Net
-from tensorflow.keras.layers import Conv2D
 
 from keras import backend as K
 import depthwise_utils as du
@@ -474,10 +473,9 @@ class TFProcess:
         self.policy_d_opponent = self.cfg['model'].get('policy_d_opponent', self.policy_d_model)
         self.policy_d_next = self.cfg['model'].get('policy_d_next', self.policy_d_model)
 
-        self.se_ratio = self.cfg['model'].get('se_ratio', 4)
         self.residual_layers = self.cfg['model'].get('residual_layers', 2)
         self.residual_layer_type = self.cfg['model'].get('residual_layer_type', 'residual') # or depthwise
-        self.residual_filters = self.cfg['model'].get('residual_filters', 192)
+        self.residual_filters = self.cfg['model'].get('residual_input_filters', 192)
         self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 6)
         self.expanded_filters = self.expanded_ratio * self.residual_filters
         self.mask_type = self.cfg['model'].get('mask_type', 'brk')
@@ -709,9 +707,12 @@ class TFProcess:
         num_layers = self.encoder_layers 
         
         mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
+        #smol_head_mask_np = np.ones((num_layers, 1, self.encoder_heads, 1, 1), dtype=float)
+
         for rule in self.attention_masks_cfg:
             piece = rule['piece']
             heads = rule['heads']
+            #override = rule.get('override_smolgen', False)
             layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
             
             piece_mask = make_piece_pattern_mask(piece)
@@ -719,9 +720,12 @@ class TFProcess:
                 if l < num_layers:
                     for h in heads:
                         if h < self.encoder_heads:
+                            #if override:
+                            #    smol_head_mask_np[l, 0, h, 0, 0] = 0.0
                             mha_mask_np[l, 0, h, :, :] = piece_mask
                             
         self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
+        #self.smol_head_mask = tf.constant(smol_head_mask_np, dtype=self.model_dtype)
         # -----------------------------------------------
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
@@ -1386,7 +1390,7 @@ class TFProcess:
         # Make sure that ghost batch norm can be applied
         if self.virtual_batch_size and batch_size % self.virtual_batch_size != 0:
             # Adjust required batch size for batch splitting.
-            required_factor = self.virtual_batch_size * self.cfg[
+            required_factor = self.virtual_batch_sizes * self.cfg[
                 "training"].get("num_batch_splits", 1)
             raise ValueError(
                 "batch_size must be a multiple of {}".format(required_factor))
@@ -2151,44 +2155,77 @@ class TFProcess:
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
+    def zero_out_masked_smolgen_weights(self):
+        """
+        Forces the LayerNorm Gamma and Beta to 0.0 for masked heads.
+        This guarantees the C++ backend will output exactly 0.0 for these heads
+        without requiring any backend modifications.
+        """
+        import re
+        import numpy as np
+        
+        # Pull parameters from the network state
+        gen_sz = self.smolgen_gen_sz 
+        total_heads = self.encoder_heads
+        num_layers = self.encoder_layers
+
+        # 1. Build a boolean matrix of which heads are active [Layers, Heads]
+        # 1.0 means active, 0.0 means masked out
+        head_is_active = np.ones((num_layers, total_heads), dtype=np.float32)
+
+        for rule in self.attention_masks_cfg:
+            if rule.get('override_smolgen', False):
+                rule_layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
+                for l in rule_layers:
+                    if l < num_layers:
+                        for h in rule['heads']:
+                            if h < total_heads:
+                                head_is_active[l, h] = 0.0  # Kill this head
+
+        # 2. Iterate through the keras model and apply the mask to the gen_from_ln layers
+        for layer in self.model.layers:
+            if "mha/smolgen/gen_from_ln" in layer.name:
+                
+                # Extract the layer index from the name (e.g., "encoder_1/mha/smolgen/gen_from_ln")
+                match = re.search(r'encoder_(\d+)', layer.name)
+                if match:
+                    # Subtract 1 because the names are 1-indexed (encoder_1 -> array index 0)
+                    l_idx = int(match.group(1)) - 1
+                    
+                    # Failsafe bounds check
+                    if l_idx < 0 or l_idx >= num_layers:
+                        continue
+                    
+                    # np.repeat perfectly maps [1.0, 0.0] -> [1.0, 1.0... 0.0, 0.0...] 
+                    # aligning exactly with the tf.reshape([-1, heads, gen_sz]) layout
+                    ln2_mask = np.repeat(head_is_active[l_idx], gen_sz)
+                    
+                    # Get Keras weights (LayerNorm standard is [gamma, beta])
+                    weights = layer.get_weights()
+                    new_weights = []
+                    
+                    for w in weights:
+                        # Multiply each weight array by the 0.0 / 1.0 mask
+                        new_weights.append(w * ln2_mask)
+                        
+                    # Burn the zeros back into the model's graph
+                    layer.set_weights(new_weights)
+                    
+                    masked_count = np.sum(head_is_active[l_idx] == 0.0)
+                    print(f"[{layer.name}] Masked out {masked_count} Smolgen heads.")
+
     def save_leelaz_weights(self, filename: str):
         numpy_weights = []
-        for layer in self.model.layers:
-            for weight in layer.weights:
-                if (weight.name.split("/")[-1] == "depthwise_kernel:0" and \
-                        isinstance(layer, du.ChessDepthwiseConv2D)):
-                    kernel = weight.numpy()
-                    mask = layer.mask
-                    kernel = kernel * mask
-                    numpy_weights.append([weight.name, kernel])
-                else:
-                    numpy_weights.append([weight.name, weight.numpy()])
-    
-        self.net.fill_net_v2(numpy_weights, self.embedding_style)
+        for weight in self.model.weights:
+            numpy_weights.append([weight.name, weight.numpy()])
+        self.net.fill_net_v2(numpy_weights)
+        # --- ADDED FOR CHESSFORMER MASKS ---
+        # Pass the config dictionary we parsed in __init__
         if hasattr(self, 'attention_masks_cfg'):
             self.net.set_attention_masks(self.attention_masks_cfg)
+        # self.zero_out_masked_smolgen_weights()
         # -----------------------------------
         
-        self.net.save_proto(filename)
-
-    def save_reshaped_weights(self, filename : str):
-        weights_lc0 = []
-        for weight in self.model.weights:
-            if weight.name.split('/')[-1] == 'depthwise_kernel:0':
-                kernel = weight.numpy()
-                #print(kernel[:,:,287,0])
-                mask = np.transpose(getFilter(self.type_filter, kernel.shape[2]).astype(bool), axes = (3,2,0,1))
-                reshaped_weights_3x3 = np.transpose(kernel, axes = (3, 2, 0, 1))[mask].reshape(1, kernel.shape[2], 9)
-                zero_column = np.zeros((1, kernel.shape[2], 1), dtype=kernel.dtype)
-                reshaped_weights_3x3 = np.concatenate((reshaped_weights_3x3, zero_column), axis=2)
-                reshaped_weights_3x3 = reshaped_weights_3x3.flatten()
-                weights_lc0.append([weight.name, reshaped_weights_3x3])
-            else:
-                weights_lc0.append([weight.name, weight.numpy()])
-        
-        self.net.fill_net_v2(weights_lc0, self.embedding_style)
-        if hasattr(self, 'attention_masks_cfg'):
-            self.net.set_attention_masks(self.attention_masks_cfg)
         self.net.save_proto(filename)
 
     @staticmethod
@@ -2229,6 +2266,14 @@ class TFProcess:
         if self.use_smolgen:
             smolgen_weights = self.smolgen_weights(inputs, heads, self.smolgen_hidden_channels, self.smolgen_hidden_sz,
                                                    self.smolgen_gen_sz, name=name+"/smolgen", activation=self.smolgen_activation)
+            '''
+            if hasattr(self, 'smol_head_mask'):
+                # Extract the [1, Heads, 1, 1] multiplier for this specific layer
+                head_mask = self.smol_head_mask[layer_idx, :, :heads, :, :]
+                
+                # Broadcasting will instantly zero out the entire 64x64 grid for masked heads
+                smolgen_weights = smolgen_weights * head_mask
+            '''
             scaled_attention_logits = scaled_attention_logits + smolgen_weights
 
 
@@ -2419,112 +2464,6 @@ class TFProcess:
         out = self.smol_weight_gen_dense(gen_from)
         return tf.reshape(out, [-1, heads, 64, 64])
 
-
-    def squeeze_excitation(self, inputs, channels, name):
-        assert channels % self.se_ratio == 0
-
-        pooled = tf.keras.layers.GlobalAveragePooling2D(
-            data_format='channels_first')(inputs)
-        squeezed = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            tf.keras.layers.Dense(channels // self.se_ratio,
-                                  kernel_initializer='glorot_normal',
-                                  name=name + '/se/dense1')(pooled))
-        excited = tf.keras.layers.Dense(2 * channels,
-                                        kernel_initializer='glorot_normal',
-                                        name=name + '/se/dense2')(squeezed)
-        return du.ApplySqueezeExcitation()([inputs, excited])
-
-    def batch_norm(self, input, name, scale=False):
-        if self.renorm_enabled:
-            clipping = {
-                "rmin": 1.0 / self.renorm_max_r,
-                "rmax": self.renorm_max_r,
-                "dmax": self.renorm_max_d
-            }
-            return tf.keras.layers.BatchNormalization(
-                epsilon=1e-5,
-                axis=1,
-                fused=False,
-                center=True,
-                scale=scale,
-                renorm=True,
-                renorm_clipping=clipping,
-                renorm_momentum=self.renorm_momentum,
-                name=name)(input)
-        else:
-            return tf.keras.layers.BatchNormalization(
-                epsilon=1e-5,
-                axis=1,
-                center=True,
-                scale=scale,
-                virtual_batch_size=self.virtual_batch_size,
-                name=name)(input)
-
-    def mobile_net_block(self, x, channels : int, name : str):
-        m = tf.keras.layers.Conv2D(channels, 1,
-                                   data_format='channels_first',
-                                   use_bias = False, 
-                                   kernel_initializer='glorot_normal',
-                                   name = name + "/1/conv2d")(x)
-            
-        m = self.batch_norm(m, name + '/1/bn', scale=False)
-        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(m)
-        
-        m = du.ChessDepthwiseConv2D(self.mask_type, 
-                                 kernel_size=[5,5],
-                                 data_format='channels_first',
-                                 padding='same',
-                                 use_bias=False,
-                                 kernel_initializer='glorot_normal',
-                                 name = name + "/2/conv2d",
-                                 precision = self.model_dtype)(m)
-
-        m = self.batch_norm(m, name + '/2/bn', scale=False)
-        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(m)
-        m = tf.keras.layers.Conv2D(self.residual_filters, 1, padding='same',
-                                   data_format='channels_first',
-                                   use_bias = False, 
-                                   kernel_initializer='glorot_normal',
-                                   name = name + "/3/conv2d")(m)
-
-        m = self.batch_norm(m, name + '/3/bn', scale=True)
-        m = self.squeeze_excitation(m, self.residual_filters, name)
-
-        return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            tf.keras.layers.Add()([m, x]))
-
-    def residual_block(self, x, name):
-
-        m = tf.keras.layers.Conv2D(self.residual_filters,
-                                    3,
-                                    use_bias=False,
-                                    padding='same',
-                                    kernel_initializer='glorot_normal',
-                                    data_format='channels_first',
-                                    name=name + '/1/conv2d')(x)
- 
-                    
-        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            self.batch_norm(m, name + '/1/bn', scale=False))
-
-        m = tf.keras.layers.Conv2D(self.residual_filters,
-                                    3,
-                                    use_bias=False,
-                                    padding='same',
-                                    kernel_initializer='glorot_normal',
-                                    data_format='channels_first',
-                                    name=name + '/2/conv2d')(m)
-
-        m = self.squeeze_excitation(self.batch_norm(m,
-                                                       name + '/2/bn',
-                                                       scale=True),
-                                       self.residual_filters,
-                                       name=name + '/se')
-        return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            tf.keras.layers.add([m, x]))
-
-
-
     def construct_net(self, inputs, name: str = ""):
         # Policy head
         assert self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION
@@ -2534,9 +2473,9 @@ class TFProcess:
             self.smol_weight_gen_dense = tf.keras.layers.Dense(
                 64 * 64, name=name+"smol_weight_gen", use_bias=False)
         
-        inputs = tf.cast(inputs, self.model_dtype)
 
         if self.embedding_style == "new":
+            inputs = tf.cast(inputs, self.model_dtype)
             flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
             flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
 
@@ -2575,37 +2514,6 @@ class TFProcess:
 
             flow = self.encoder_norm(
                 name=name+"embedding/ffn_ln")(flow + ffn_output * alpha)
-
-        elif self.embedding_style == "conv":
-            flow = inputs
-            
-            # 1. Expand with BN and Activation (The Stem)
-            flow = tf.keras.layers.Conv2D(self.residual_filters, 1, data_format='channels_first',
-                                          use_bias=False, kernel_initializer='glorot_normal',
-                                          name=name + "embedding/expand")(flow)
-            flow = self.batch_norm(flow, name + "embedding/expand/bn", scale=False)
-            flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
-
-            # 2. Residual Tower
-            if self.residual_layer_type == "standard":
-                for i in range(self.residual_layers):
-                    flow = self.residual_block(flow, name=name + f"embedding/residual_{i+1}")
-            elif self.residual_layer_type == "mobilenet":
-                for i in range(self.residual_layers):
-                    flow = self.mobile_net_block(flow, channels=self.expanded_filters, 
-                                                 name=name + f"embedding/mobilenet_{i+1}")
-            
-            # 3. Flatten the CNN features
-            flow = tf.transpose(flow, perm=[0, 2, 3, 1])
-            flow = tf.reshape(flow, [-1, 64, self.residual_filters])
-
-            flow = tf.keras.layers.Dense(self.embedding_size, kernel_initializer="glorot_normal",
-                                         activation=self.DEFAULT_ACTIVATION,
-                                         name=name+"embedding")(flow)
-            # For 8x384x12h-conv
-            #flow = self.encoder_norm(name=name+"embedding/ln")(flow)
-            flow = ma_gating(flow, name=name+'embedding')
-
 
         elif self.embedding_style == "old":
             flow = tf.transpose(inputs, perm=[0, 2, 3, 1])

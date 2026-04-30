@@ -14,7 +14,11 @@ UV_HTTP_TIMEOUT=600 uv pip install -r tf/requirements.txt --index-strategy unsaf
 
     uv run train.py --cfg configs/8x384x12h-c2r2bk.yaml
 
+    uv run train.py --cfg configs/8x384x12h-crbk.yaml
+
     uv run train.py --cfg configs/BT4-8x256x8h-crbk.yaml
+
+    uv run train.py --cfg configs/8x384x12h-4res.yaml
 
 # docker
 docker run --gpus all -it --rm --ipc=host --user $(id -u):$(id -g) -v ~/lczero-training:/workspace/lczero -v ~/leela:/home/raph/leela nvcr.io/nvidia/tensorflow:25.02-tf2-py3

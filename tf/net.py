@@ -211,8 +211,62 @@ class Net:
         print("Weights saved as '{}' {}M".format(filename, round(size, 2)))
 
     def tf_name_to_pb_name(self, name):
-        """Given Tensorflow variable name returns the protobuf name and index
-        of residual block if weight belong in a residual block."""
+        """Given Tensorflow variable name returns the protobuf name, the target repeated list (if any), 
+        and the index within that list."""
+
+        def convblock_to_bp(w):
+            w = w.split(':')[0]
+            d = {
+                'kernel': 'weights',
+                'gamma': 'bn_gammas',
+                'beta': 'bn_betas',
+                'moving_mean': 'bn_means',
+                'moving_variance': 'bn_stddivs',
+                'bias': 'biases'
+            }
+            return d[w]
+        
+        def bn_to_bp(w):
+            w = w.split(':')[0]
+            d = {
+                'gamma': 'bn_gammas',
+                'beta': 'bn_betas',
+                'moving_mean': 'bn_means',
+                'moving_variance': 'bn_stddivs',
+            }
+            return d[w]
+
+        def simple_conv_to_bp(w):
+            w = w.split(':')[0]
+            d = {
+                'kernel': 'weights',
+                'bias': 'biases'
+            }
+            return d[w]
+        
+        def d_conv_to_bp(w):
+            w = w.split(':')[0]
+            d = {
+                'depthwise_kernel': 'weights',
+                'gamma': 'bn_gammas',
+                'beta': 'bn_betas',
+                'moving_mean': 'bn_means',
+                'moving_variance': 'bn_stddivs',
+                'bias': 'biases'
+            }
+            return d[w]
+
+        def se_to_bp(l, w):
+            if l == 'dense1':
+                n = 1
+            elif l == 'dense2':
+                n = 2
+            else:
+                raise ValueError('Unable to decode SE-weight {}/{}'.format(l, w))
+            w = w.split(':')[0]
+            d = {'kernel': 'w', 'bias': 'b'}
+            return d[w] + str(n)
+
         def value_to_bp(l, w):
             if l == 'dense_error':
                 w = w.split(':')[0]
@@ -229,11 +283,9 @@ class Net:
             elif l == 'dense2':
                 n = 2
             else:
-                raise ValueError('Unable to decode value weight {}/{}'.format(
-                    l, w))
+                raise ValueError('Unable to decode value weight {}/{}'.format(l, w))
             w = w.split(':')[0]
             d = {'kernel': 'ip{}_val_w', 'bias': 'ip{}_val_b'}
-
             return d[w].format(n)
         
         def attn_pol_to_bp(l, w):
@@ -244,22 +296,18 @@ class Net:
             elif l == 'ppo':
                 n = 4
             else:
-                raise ValueError(
-                    'Unable to decode attn_policy weight {}/{}'.format(l, w))
+                raise ValueError('Unable to decode attn_policy weight {}/{}'.format(l, w))
             w = w.split(':')[0]
             d = {'kernel': 'ip{}_pol_w', 'bias': 'ip{}_pol_b'}
-
             return d[w].format(n)
 
         def encoder_to_bp(l, w):
             w = w.split(':')[0]
             d = {'gamma': '{}_gammas', 'beta': '{}_betas'}
-
             return d[w].format(l)
 
         def mha_to_bp(l, w):
             s = ''
-            # for these first two the only possibilities are the input step sizes
             if l == 'quantize_1':
                 return 's1'
             elif l == 'quantize_2':
@@ -270,14 +318,10 @@ class Net:
                 s = 'dense'
             elif l.startswith('w'):
                 s = l[1]
-                
-
             else:
-                raise ValueError('Unable to decode mha weight {}/{}'.format(
-                    l, w))
+                raise ValueError('Unable to decode mha weight {}/{}'.format(l, w))
             w = w.split(':')[0]
             d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
-
             return d[w].format(s)
 
         def mha_smolgen_to_bp(l, w):
@@ -289,16 +333,9 @@ class Net:
                 'gen_from_ln': 'ln2_{}'
             }
             if s[l] is None:
-                raise ValueError(
-                    'Unable to decode mha smolgen weight {}/{}'.format(l, w))
+                raise ValueError('Unable to decode mha smolgen weight {}/{}'.format(l, w))
             w = w.split(':')[0]
-            d = {
-                'kernel': 'w',
-                'bias': 'b',
-                'gamma': 'gammas',
-                'beta': 'betas'
-            }
-
+            d = {'kernel': 'w', 'bias': 'b', 'gamma': 'gammas', 'beta': 'betas'}
             return s[l].format(d[w])
 
         def ffn_to_bp(l, w):
@@ -308,7 +345,6 @@ class Net:
             elif l == 'quantize_2':
                 return 's2'
             d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
-
             return d[w].format(l)
 
         def moves_left_to_bp(l, w):
@@ -319,20 +355,18 @@ class Net:
             elif l == 'dense2':
                 n = 2
             else:
-                raise ValueError(
-                    'Unable to decode moves_left weight {}/{}'.format(l, w))
+                raise ValueError('Unable to decode moves_left weight {}/{}'.format(l, w))
             w = w.split(':')[0]
             d = {'kernel': 'ip{}_mov_w', 'bias': 'ip{}_mov_b'}
-
             return d[w].format(n)
 
         layers = name.split('/')
         base_layer = layers[0]
         weights_name = layers[-1]
+        
         pb_name = None
-        block = None
-        encoder_block = None
-        pol_encoder_block = None
+        target_list = None
+        target_idx = None
 
         if base_layer == 'policy':
             pb_prefix = 'policy_heads.'
@@ -341,7 +375,6 @@ class Net:
                     pb_name = pb_prefix + 'ip_pol_w'
                 else:
                     pb_name = pb_prefix + 'ip_pol_b'
-                
             elif layers[1] in ['vanilla', 'soft', 'optimistic_st', 'opponent', 'next']:
                 pb_prefix = pb_prefix + layers[1] + '.'
                 if layers[2] == 'attention':
@@ -361,11 +394,11 @@ class Net:
                 pb_name = moves_left_to_bp(layers[1], weights_name)
 
         elif base_layer.startswith('encoder'):
-            encoder_block = int(base_layer.split('_')[1]) - 1
+            target_list = 'encoder'
+            target_idx = int(base_layer.split('_')[1]) - 1
             if layers[1] == 'mha':
                 if layers[2] == 'smolgen':
-                    pb_name = 'mha.smolgen.' + mha_smolgen_to_bp(
-                        layers[3], weights_name)
+                    pb_name = 'mha.smolgen.' + mha_smolgen_to_bp(layers[3], weights_name)
                 else:
                     pb_name = 'mha.' + mha_to_bp(layers[2], weights_name)
             elif layers[1] == 'ffn':
@@ -374,7 +407,40 @@ class Net:
                 pb_name = encoder_to_bp(layers[1], weights_name)
                 
         elif base_layer == 'embedding':
-            if layers[1].split(':')[0] == 'kernel':
+            
+            # 1. The Expand Stem (Conv1Block)
+            if layers[1] == 'expand':
+                if len(layers) == 3: # embedding/expand/kernel:0
+                    pb_name = 'ip_emb_expand.' + simple_conv_to_bp(weights_name)
+                elif layers[2] == 'bn': # embedding/expand/bn/gamma:0
+                    pb_name = 'ip_emb_expand.' + bn_to_bp(weights_name)
+
+            # 3. MobileNet Embedding Trunk
+            elif layers[1].startswith('mobilenet'):
+                target_list = 'ip_emb_mobilenet_tower'
+                target_idx = int(layers[1].split('_')[1]) - 1
+                if layers[2] == '1':
+                    pb_name = 'conv1.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
+                elif layers[2] == '2':
+                    pb_name = 'd_conv.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else d_conv_to_bp(weights_name))
+                elif layers[2] == '3':
+                    pb_name = 'conv2.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
+                elif layers[2] == 'se':
+                    pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
+
+            # 4. Residual Embedding Trunk
+            elif layers[1].startswith('residual'):
+                target_list = 'ip_emb_residual_tower'
+                target_idx = int(layers[1].split('_')[1]) - 1
+                if layers[2] == '1':
+                    pb_name = 'conv1.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
+                elif layers[2] == '2':
+                    pb_name = 'conv2.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
+                elif layers[2] == 'se':
+                    pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
+
+            # Legacy embedding names (Kept for backwards compatibility)
+            elif layers[1].split(':')[0] == 'kernel':
                 pb_name = 'ip_emb_w'
             elif layers[1].split(':')[0] == 'bias':
                 pb_name = 'ip_emb_b'
@@ -387,9 +453,19 @@ class Net:
                     pb_name = 'ip_emb_preproc_w'
                 else:
                     pb_name = 'ip_emb_preproc_b'
-            if layers[1] == 'mult_gate' or layers[1] == 'add_gate':
+            elif layers[1] == 'mult_gate' or layers[1] == 'add_gate':
                 if layers[2].split(':')[0] == 'gate':
                     pb_name = 'ip_{}'.format(layers[1])
+
+        elif base_layer.startswith('residual'):
+            target_list = 'residual'
+            target_idx = int(base_layer.split('_')[1]) - 1
+            if layers[1] == '1':
+                pb_name = 'conv1.' + convblock_to_bp(weights_name)
+            elif layers[1] == '2':
+                pb_name = 'conv2.' + convblock_to_bp(weights_name)
+            elif layers[1] == 'se':
+                pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
 
         elif base_layer == 'smol_weight_gen':
             if layers[1].split(':')[0] == 'kernel':
@@ -397,10 +473,13 @@ class Net:
             else:
                 pb_name = 'smolgen_b'
         
+        elif base_layer == 'input':
+            pb_name = 'input.' + convblock_to_bp(weights_name)
+        
         else:
             raise ValueError('Unable to decode layer {}'.format(name))
 
-        return (pb_name, block, pol_encoder_block, encoder_block)
+        return pb_name, target_list, target_idx
 
     def get_weights_v2(self, names):
         # `names` is a list of Tensorflow tensor names to get from the protobuf.
@@ -419,23 +498,16 @@ class Net:
                 # headcount is set with set_headcount()
                 continue
 
-            pb_name, block, pol_encoder_block, encoder_block = self.tf_name_to_pb_name(
-                name)
+            pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
 
             if pb_name is None:
-                raise ValueError(
-                    "Don't know where to store weight in protobuf: {}".format(
-                        name))
+                raise ValueError("Don't know where to store weight in protobuf: {}".format(name))
 
-            if block is None:
-                if pol_encoder_block is not None:
-                    pb_weights = self.pb.weights.pol_encoder[pol_encoder_block]
-                elif encoder_block is not None:
-                    pb_weights = self.pb.weights.encoder[encoder_block]
-                else:
-                    pb_weights = self.pb.weights
+            if target_list is None:
+                pb_weights = self.pb.weights
             else:
-                pb_weights = self.pb.weights.residual[block]
+                list_obj = getattr(self.pb.weights, target_list)
+                pb_weights = list_obj[target_idx]
 
             w = self.denorm_layer_v2(nested_getattr(pb_weights, pb_name))
 
@@ -446,6 +518,71 @@ class Net:
             tensors[tf_name] = w
         return tensors
 
+    def fill_net_v2(self, all_weights, embedding_style):
+        # all_weights is array of [name of weight, numpy array of weights].
+        self.pb.format.weights_encoding = pb.Format.LINEAR16
+
+        has_renorm = any('renorm' in w[0] for w in all_weights)
+        weight_names = [w[0] for w in all_weights]
+
+        # Clear existing repeated fields before appending
+        del self.pb.weights.residual[:]
+        del self.pb.weights.encoder[:]
+        del self.pb.weights.pol_encoder[:]
+        del self.pb.weights.ip_emb_mobilenet_tower[:]
+        del self.pb.weights.ip_emb_residual_tower[:]
+
+        for name, weights in all_weights:
+            layers = name.split('/')
+            weights_name = layers[-1]
+            if weights.ndim == 4:
+                # TF: [filter_height, filter_width, in_channels, out_channels]
+                # Leela: [output, input, filter_size, filter_size]
+                weights = np.transpose(weights, axes=[3, 2, 0, 1])
+            elif weights.ndim == 2:
+                # TF: [in, out] -> Leela: [out, in]
+                weights = np.transpose(weights, axes=[1, 0])
+
+            if 'renorm' in name:
+                continue
+            if has_renorm:
+                if 'variance:' in weights_name:
+                    continue
+                if 'stddev:' in weights_name:
+                    weights = np.square(weights) - 1e-5
+                    name = name.replace('stddev', 'variance')
+
+            if self.pb.format.network_format.input < pb.NetworkFormat.INPUT_112_WITH_CANONICALIZATION_HECTOPLIES:
+                if embedding_style == "new":
+                    if name == 'embedding/kernel:0':
+                        weights[:, 109] /= 99.0
+                
+                elif embedding_style == "conv":
+                    if name == 'embedding/expand/kernel:0':
+                        weights[:, 109, 0, 0] /= 99.0
+
+            pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
+
+            if pb_name is None:
+                raise ValueError("Don't know where to store weight in protobuf: {}".format(name))
+
+            if target_list is None:
+                pb_weights = self.pb.weights
+            else:
+                list_obj = getattr(self.pb.weights, target_list)
+                # Expand the repeated list dynamically if necessary
+                while target_idx >= len(list_obj):
+                    list_obj.add()
+                pb_weights = list_obj[target_idx]
+
+            self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
+
+            if pb_name.endswith('bn_betas'):
+                gamma_name = name.replace('beta', 'gamma')
+                if gamma_name not in weight_names:
+                    gamma = np.ones(weights.shape)
+                    pb_gamma = pb_name.replace('bn_betas', 'bn_gammas')
+                    self.fill_layer_v2(nested_getattr(pb_weights, pb_gamma), gamma)
 
     def parse_proto(self, filename):
         with gzip.open(filename, 'rb') as f:
@@ -460,7 +597,7 @@ class Net:
             self.set_movesleftformat(pb.NetworkFormat.MOVES_LEFT_NONE)
 
 
-
+    '''
     def fill_net_v2(self, all_weights):
         # all_weights is array of [name of weight, numpy array of weights].
         self.pb.format.weights_encoding = pb.Format.LINEAR16
@@ -469,6 +606,7 @@ class Net:
         weight_names = [w[0] for w in all_weights]
 
         del self.pb.weights.residual[:]
+        del self.pb.weights.bottleneck[:]
 
         for name, weights in all_weights:
             layers = name.split('/')
@@ -534,6 +672,7 @@ class Net:
                 pb_weights = self.pb.weights.residual[block]
 
             self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
+    '''
 
 def print_pb_stats(obj, parent=None):
     for descriptor in obj.DESCRIPTOR.fields:
