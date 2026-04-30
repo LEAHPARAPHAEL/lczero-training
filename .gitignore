@@ -105,7 +105,7 @@ venv.bak/
 .mypy_cache/
 
 # protobuf stuff
-tf/proto/
+tf/proto/*.py
 
 # runs
 *.v2
