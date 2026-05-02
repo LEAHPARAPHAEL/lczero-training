@@ -2562,7 +2562,7 @@ class TFProcess:
 
             # 2. Residual Tower
             if self.residual_layer_type == "standard":
-                flow = tf.keras.layers.Conv2D(self.residual_filters, 3, data_format='channels_first',
+                flow = tf.keras.layers.Conv2D(self.residual_filters, 3, padding = 'same', data_format='channels_first',
                                             use_bias=False, kernel_initializer='glorot_normal',
                                             name=name + "embedding/expand")(flow)
                 flow = self.batch_norm(flow, name + "embedding/expand/bn", scale=True)
