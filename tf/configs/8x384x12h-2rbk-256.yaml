@@ -137,7 +137,7 @@ model:
 
     se_ratio: 2
     mask_type: "rbk"
-    residual_layers: 4
+    residual_layers: 2
     residual_filters: 96
     expanded_ratio: 6
     residual_layer_type: mobilenet

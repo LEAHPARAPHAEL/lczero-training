@@ -480,7 +480,7 @@ class TFProcess:
         self.residual_filters = self.cfg['model'].get('residual_filters', 192)
         self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 6)
         self.expanded_filters = self.expanded_ratio * self.residual_filters
-        self.mask_type = self.cfg['model'].get('mask_type', 'brk')
+        self.mask_type = self.cfg['model'].get('mask_type', 'rbk')
 
 
         self.dropout_rate = self.cfg["model"].get("dropout_rate", 0.0)
@@ -2155,8 +2155,7 @@ class TFProcess:
         numpy_weights = []
         for layer in self.model.layers:
             for weight in layer.weights:
-                if (weight.name.split("/")[-1] == "depthwise_kernel:0" and \
-                        isinstance(layer, du.ChessDepthwiseConv2D)):
+                if weight.name.split("/")[-1] == "depthwise_kernel:0":
                     kernel = weight.numpy()
                     mask = layer.mask
                     kernel = kernel * mask
@@ -2168,28 +2167,10 @@ class TFProcess:
         if hasattr(self, 'attention_masks_cfg'):
             self.net.set_attention_masks(self.attention_masks_cfg)
         # -----------------------------------
-        
+        if self.residual_layers > 0 and self.residual_layer_type == "mobilenet":
+            self.net.pb.weights.mask_type = self.mask_type
         self.net.save_proto(filename)
 
-    def save_reshaped_weights(self, filename : str):
-        weights_lc0 = []
-        for weight in self.model.weights:
-            if weight.name.split('/')[-1] == 'depthwise_kernel:0':
-                kernel = weight.numpy()
-                #print(kernel[:,:,287,0])
-                mask = np.transpose(getFilter(self.type_filter, kernel.shape[2]).astype(bool), axes = (3,2,0,1))
-                reshaped_weights_3x3 = np.transpose(kernel, axes = (3, 2, 0, 1))[mask].reshape(1, kernel.shape[2], 9)
-                zero_column = np.zeros((1, kernel.shape[2], 1), dtype=kernel.dtype)
-                reshaped_weights_3x3 = np.concatenate((reshaped_weights_3x3, zero_column), axis=2)
-                reshaped_weights_3x3 = reshaped_weights_3x3.flatten()
-                weights_lc0.append([weight.name, reshaped_weights_3x3])
-            else:
-                weights_lc0.append([weight.name, weight.numpy()])
-        
-        self.net.fill_net_v2(weights_lc0, self.embedding_style)
-        if hasattr(self, 'attention_masks_cfg'):
-            self.net.set_attention_masks(self.attention_masks_cfg)
-        self.net.save_proto(filename)
 
     @staticmethod
     def split_heads(inputs, batch_size: int, num_heads: int, depth: int):
@@ -2578,19 +2559,22 @@ class TFProcess:
 
         elif self.embedding_style == "conv":
             flow = inputs
-            
-            # 1. Expand with BN and Activation (The Stem)
-            flow = tf.keras.layers.Conv2D(self.residual_filters, 1, data_format='channels_first',
-                                          use_bias=False, kernel_initializer='glorot_normal',
-                                          name=name + "embedding/expand")(flow)
-            flow = self.batch_norm(flow, name + "embedding/expand/bn", scale=False)
-            flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
 
             # 2. Residual Tower
             if self.residual_layer_type == "standard":
+                flow = tf.keras.layers.Conv2D(self.residual_filters, 3, data_format='channels_first',
+                                            use_bias=False, kernel_initializer='glorot_normal',
+                                            name=name + "embedding/expand")(flow)
+                flow = self.batch_norm(flow, name + "embedding/expand/bn", scale=True)
+                flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
                 for i in range(self.residual_layers):
                     flow = self.residual_block(flow, name=name + f"embedding/residual_{i+1}")
             elif self.residual_layer_type == "mobilenet":
+                flow = tf.keras.layers.Conv2D(self.residual_filters, 1, data_format='channels_first',
+                            use_bias=False, kernel_initializer='glorot_normal',
+                            name=name + "embedding/expand")(flow)
+                flow = self.batch_norm(flow, name + "embedding/expand/bn", scale=True)
+                flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
                 for i in range(self.residual_layers):
                     flow = self.mobile_net_block(flow, channels=self.expanded_filters, 
                                                  name=name + f"embedding/mobilenet_{i+1}")

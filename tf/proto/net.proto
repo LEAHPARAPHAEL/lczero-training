@@ -59,6 +59,15 @@ message Weights {
     optional Layer bn_betas = 6;
   }
 
+  message DepthwiseConvBlock {
+    optional Layer weights = 1;
+    optional Layer biases = 2;
+    optional Layer bn_means = 3;
+    optional Layer bn_stddivs = 4;
+    optional Layer bn_gammas = 5;
+    optional Layer bn_betas = 6;
+  }
+
   message LayerNormalization {
     optional Layer ln_gammas = 1;
     optional Layer ln_betas = 2;
@@ -82,7 +91,7 @@ message Weights {
 
   message MobileNet {
     optional ConvBlock conv1 = 1;
-    optional ConvBlock d_conv = 2;
+    optional DepthwiseConvBlock d_conv = 2;
     optional ConvBlock conv2 = 3;
     optional SEunit se = 4;
   }
@@ -226,6 +235,7 @@ message Weights {
   optional ConvBlock ip_emb_expand = 46;
   repeated MobileNet ip_emb_mobilenet_tower = 47;
   repeated Residual ip_emb_residual_tower = 48;
+  optional string mask_type = 49;
 
   // Input gating (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).
   optional Layer ip_mult_gate = 33;
