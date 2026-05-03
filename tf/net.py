@@ -559,7 +559,7 @@ class Net:
                 
                 elif embedding_style == "conv":
                     if name == 'embedding/expand/kernel:0':
-                        weights[:, 109, 0, 0] /= 99.0
+                        weights[:, 109, :, :] /= 99.0
 
             pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
 
