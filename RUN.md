@@ -37,6 +37,8 @@ cd lczero/tf
 
     python train.py --cfg configs/BT4-8x256x8h-crbk.yaml
 
+    python train.py --cfg configs/MM-TT-MM-TT.yaml
+
 # git
 git config --global pull.rebase true 
 git status 

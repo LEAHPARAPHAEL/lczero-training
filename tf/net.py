@@ -226,24 +226,6 @@ class Net:
             }
             return d[w]
         
-        def bn_to_bp(w):
-            w = w.split(':')[0]
-            d = {
-                'gamma': 'bn_gammas',
-                'beta': 'bn_betas',
-                'moving_mean': 'bn_means',
-                'moving_variance': 'bn_stddivs',
-            }
-            return d[w]
-
-        def simple_conv_to_bp(w):
-            w = w.split(':')[0]
-            d = {
-                'kernel': 'weights',
-                'bias': 'biases'
-            }
-            return d[w]
-        
         def d_conv_to_bp(w):
             w = w.split(':')[0]
             d = {
@@ -393,53 +375,10 @@ class Net:
             if 'dense' in layers[1] or 'embedding' in layers[1]:
                 pb_name = moves_left_to_bp(layers[1], weights_name)
 
-        elif base_layer.startswith('encoder'):
-            target_list = 'encoder'
-            target_idx = int(base_layer.split('_')[1]) - 1
-            if layers[1] == 'mha':
-                if layers[2] == 'smolgen':
-                    pb_name = 'mha.smolgen.' + mha_smolgen_to_bp(layers[3], weights_name)
-                else:
-                    pb_name = 'mha.' + mha_to_bp(layers[2], weights_name)
-            elif layers[1] == 'ffn':
-                pb_name = 'ffn.' + ffn_to_bp(layers[2], weights_name)
-            else:
-                pb_name = encoder_to_bp(layers[1], weights_name)
-                
-        elif base_layer == 'embedding':
+        elif base_layer == 'input':
+            if layers[1] == 'conv':
+                pb_name = 'input.' + convblock_to_bp(weights_name) 
             
-            # 1. The Expand Stem (Conv1Block)
-            if layers[1] == 'expand':
-                if len(layers) == 3: # embedding/expand/kernel:0
-                    pb_name = 'ip_emb_expand.' + simple_conv_to_bp(weights_name)
-                elif layers[2] == 'bn': # embedding/expand/bn/gamma:0
-                    pb_name = 'ip_emb_expand.' + bn_to_bp(weights_name)
-
-            # 3. MobileNet Embedding Trunk
-            elif layers[1].startswith('mobilenet'):
-                target_list = 'ip_emb_mobilenet_tower'
-                target_idx = int(layers[1].split('_')[1]) - 1
-                if layers[2] == '1':
-                    pb_name = 'conv1.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
-                elif layers[2] == '2':
-                    pb_name = 'd_conv.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else d_conv_to_bp(weights_name))
-                elif layers[2] == '3':
-                    pb_name = 'conv2.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
-                elif layers[2] == 'se':
-                    pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
-
-            # 4. Residual Embedding Trunk
-            elif layers[1].startswith('residual'):
-                target_list = 'ip_emb_residual_tower'
-                target_idx = int(layers[1].split('_')[1]) - 1
-                if layers[2] == '1':
-                    pb_name = 'conv1.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
-                elif layers[2] == '2':
-                    pb_name = 'conv2.' + (bn_to_bp(weights_name) if 'bn' in layers[3] else convblock_to_bp(weights_name))
-                elif layers[2] == 'se':
-                    pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
-
-            # Legacy embedding names (Kept for backwards compatibility)
             elif layers[1].split(':')[0] == 'kernel':
                 pb_name = 'ip_emb_w'
             elif layers[1].split(':')[0] == 'bias':
@@ -457,24 +396,71 @@ class Net:
                 if layers[2].split(':')[0] == 'gate':
                     pb_name = 'ip_{}'.format(layers[1])
 
-        elif base_layer.startswith('residual'):
-            target_list = 'residual'
-            target_idx = int(base_layer.split('_')[1]) - 1
-            if layers[1] == '1':
-                pb_name = 'conv1.' + convblock_to_bp(weights_name)
-            elif layers[1] == '2':
-                pb_name = 'conv2.' + convblock_to_bp(weights_name)
-            elif layers[1] == 'se':
-                pb_name = 'se.' + se_to_bp(layers[-2], weights_name)
+        elif base_layer == 'final_reshape':
+            if layers[1].startswith("dense") :
+                if layers[2].split(':')[0] == 'kernel':
+                    pb_name = 'cnn_enc_dense_w'
+                elif layers[2].split(':')[0] == 'bias':
+                    pb_name = 'cnn_enc_dense_b'
+            elif layers[1].startswith("ln") :
+                pb_name = 'cnn_enc' + encoder_to_bp('ln', weights_name)
+            elif layers[1].startswith("ma_gating") :
+                pb_name = 'cnn_enc.' + layers[2]
+
+        elif base_layer.startswith('block'):
+            target_list = 'tower'
+            target_idx = int(base_layer.split('_')[1])
+            block_type = base_layer.split('_')[2]
+
+            if block_type == 'enc-cnn':
+                pb_name = 'enc_cnn.' + convblock_to_bp(weights_name)
+            elif block_type == 'cnn-cnn':
+                pb_name = 'cnn_cnn.' + convblock_to_bp(weights_name)
+            elif block_type == 'cnn-enc':
+                if layers[1].startswith("dense") :
+                    if layers[2].split(':')[0] == 'kernel':
+                        pb_name = 'dense_w'
+                    elif layers[2].split(':')[0] == 'bias':
+                        pb_name = 'dense_b'
+                elif layers[1].startswith("ln") :
+                    pb_name = 'ln.' + encoder_to_bp('ln', weights_name)
+                elif layers[1].startswith("ma_gating") :
+                    pb_name = layers[2]
+
+            elif block_type == 'encoder':
+                if layers[1] == 'mha':
+                    if layers[2] == 'smolgen':
+                        pb_name = 'encoder.mha.smolgen.' + mha_smolgen_to_bp(layers[3], weights_name)
+                    else:
+                        pb_name = 'encoder.mha.' + mha_to_bp(layers[2], weights_name)
+                elif layers[1] == 'ffn':
+                    pb_name = 'encoder.ffn.' + ffn_to_bp(layers[2], weights_name)
+                else:
+                    pb_name = 'encoder.' + encoder_to_bp(layers[1], weights_name)
+
+            elif block_type == 'mobilenet':
+                if layers[1] == '1':
+                    pb_name = 'mobilenet.conv1.' + convblock_to_bp(weights_name)
+                elif layers[1] == '2':
+                    pb_name = 'mobilenet.d_conv.' + d_conv_to_bp(weights_name)
+                elif layers[1] == '3':
+                    pb_name = 'mobilenet.conv2.' + convblock_to_bp(weights_name)
+                elif layers[1] == 'se':
+                    pb_name = 'mobilenet.se.' + se_to_bp(layers[-2], weights_name)
+
+            elif block_type == 'residual':
+                if layers[1] == '1':
+                    pb_name = 'residual.conv1.' + convblock_to_bp(weights_name)
+                elif layers[1] == '2':
+                    pb_name = 'residual.conv2.' + convblock_to_bp(weights_name)
+                elif layers[1] == 'se':
+                    pb_name = 'residual.se.' + se_to_bp(layers[-2], weights_name)
 
         elif base_layer == 'smol_weight_gen':
             if layers[1].split(':')[0] == 'kernel':
                 pb_name = 'smolgen_w'
             else:
                 pb_name = 'smolgen_b'
-        
-        elif base_layer == 'input':
-            pb_name = 'input.' + convblock_to_bp(weights_name)
         
         else:
             raise ValueError('Unable to decode layer {}'.format(name))
@@ -518,7 +504,7 @@ class Net:
             tensors[tf_name] = w
         return tensors
 
-    def fill_net_v2(self, all_weights, embedding_style):
+    def fill_net_v2(self, all_weights, masks, embedding_style):
         # all_weights is array of [name of weight, numpy array of weights].
         self.pb.format.weights_encoding = pb.Format.LINEAR16
 
@@ -526,13 +512,11 @@ class Net:
         weight_names = [w[0] for w in all_weights]
 
         # Clear existing repeated fields before appending
-        del self.pb.weights.residual[:]
+        del self.pb.weights.tower[:]
         del self.pb.weights.encoder[:]
         del self.pb.weights.pol_encoder[:]
-        del self.pb.weights.ip_emb_mobilenet_tower[:]
-        del self.pb.weights.ip_emb_residual_tower[:]
 
-        for name, weights in all_weights:
+        for (name, weights), mask in zip(all_weights, masks):
             layers = name.split('/')
             weights_name = layers[-1]
             if weights.ndim == 4:
@@ -554,11 +538,11 @@ class Net:
 
             if self.pb.format.network_format.input < pb.NetworkFormat.INPUT_112_WITH_CANONICALIZATION_HECTOPLIES:
                 if embedding_style == "new":
-                    if name == 'embedding/kernel:0':
+                    if name == 'input/kernel:0':
                         weights[:, 109] /= 99.0
                 
                 elif embedding_style == "conv":
-                    if name == 'embedding/expand/kernel:0':
+                    if name == 'input/conv/kernel:0':
                         weights[:, 109, :, :] /= 99.0
 
             pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
@@ -574,6 +558,9 @@ class Net:
                 while target_idx >= len(list_obj):
                     list_obj.add()
                 pb_weights = list_obj[target_idx]
+
+            if mask:
+                self.pb.weights.tower[target_idx].mobilenet.d_conv.mask_type = mask
 
             self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
 

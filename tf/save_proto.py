@@ -291,9 +291,9 @@ def main(cmd):
 
     tfprocess.restore()
     print("Done")
-    evaled_steps = tfprocess.checkpoint.global_step
+    evaled_steps = tfprocess.global_step
     path = os.path.join(tfprocess.root_dir, tfprocess.cfg["name"])
-    leela_path = path + "-" + str(evaled_steps)
+    leela_path = path + "-" + "last"
     tfprocess.save_leelaz_weights(leela_path)
 
     return

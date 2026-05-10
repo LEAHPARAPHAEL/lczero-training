@@ -66,6 +66,7 @@ message Weights {
     optional Layer bn_stddivs = 4;
     optional Layer bn_gammas = 5;
     optional Layer bn_betas = 6;
+    optional string mask_type = 7;
   }
 
   message LayerNormalization {
@@ -151,6 +152,23 @@ message Weights {
     optional Layer ln2_betas = 6;
   }
 
+  message TowerBlock {
+    optional Layer dense_w = 1;
+    optional Layer dense_b = 2;
+    optional Layer mult_gate = 3;
+    optional Layer add_gate = 4;
+    optional Layer ln_gammas = 5;
+    optional Layer ln_betas = 6;
+    optional ConvBlock cnn_cnn = 7;
+    optional ConvBlock enc_cnn = 8;
+
+    oneof block_type {
+      MobileNet mobilenet = 9;
+      Residual residual = 10;
+      EncoderLayer encoder = 11;
+    }
+  }
+
   message PolicyHead {
     optional Layer ip_pol_w = 1;
     optional Layer ip_pol_b = 2;
@@ -218,7 +236,14 @@ message Weights {
   optional ConvBlock input = 1;
 
   // Residual tower.
-  repeated Residual residual = 2;
+  repeated TowerBlock tower = 2;
+
+  optional Layer cnn_enc_w = 46;
+  optional Layer cnn_enc_b = 47;
+  optional Layer cnn_enc_ln_betas = 48;
+  optional Layer cnn_enc_ln_gammas = 49;
+  optional Layer cnn_enc_mult_gate = 50;
+  optional Layer cnn_enc_add_gate = 51;
 
   // Embedding layer for attention body encoders
   // (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).
@@ -231,11 +256,6 @@ message Weights {
 
   optional Layer ip_emb_ln_gammas = 39;
   optional Layer ip_emb_ln_betas = 40;
-
-  optional ConvBlock ip_emb_expand = 46;
-  repeated MobileNet ip_emb_mobilenet_tower = 47;
-  repeated Residual ip_emb_residual_tower = 48;
-  optional string mask_type = 49;
 
   // Input gating (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).
   optional Layer ip_mult_gate = 33;
