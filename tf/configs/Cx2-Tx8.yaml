@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "MM-TT-MM-TT"
+name: "Cx2-Tx8"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -132,9 +132,8 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    blocks: ['M', 'M', 'T', 'T', 'M', 'M', 'T', 'T']
-    residual_filters: 128
-    mobilenet_filters: 192
-    expanded_ratio: 6
+    blocks: ['C', 'C', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
+    cnn_blocks_dims: [256, 256]
+    depthwise_masks: [[96, 96, 64], [96, 96, 64]]
+    cnn_dffs: [384, 384]
     se_ratio: 2
-    depthwise_masks: ['rbk', 'rbk', 'rbk', 'rbk']

@@ -135,6 +135,29 @@ class Net:
                 if rule.get('layers') != "all":
                     mask_msg.layer_indices.extend(rule['layers'])
 
+    def set_tower_description(self, 
+                            residual_blocks,
+                            max_residual_filters,
+                            mobilenet_blocks, 
+                            max_mobilenet_filters,
+                            max_mobilenet_dff,
+                            convnext_blocks,
+                            max_convnext_filters,
+                            max_convnext_dff,
+                            encoder_blocks,
+                            first_block) :
+
+        self.pb.format.network_format.first_block = first_block
+        self.pb.format.network_format.residual_blocks = residual_blocks
+        self.pb.format.network_format.max_residual_filters = max_residual_filters
+        self.pb.format.network_format.mobilenet_blocks = mobilenet_blocks
+        self.pb.format.network_format.max_mobilenet_filters = max_mobilenet_filters
+        self.pb.format.network_format.max_mobilenet_dff = max_mobilenet_dff
+        self.pb.format.network_format.encoder_blocks = encoder_blocks
+        self.pb.format.network_format.convnext_blocks = convnext_blocks
+        self.pb.format.network_format.max_convnext_filters = max_convnext_filters
+        self.pb.format.network_format.max_convnext_dff = max_convnext_dff
+
     def activation(self, name):
         if name == "relu":
             return pb.NetworkFormat.ACTIVATION_RELU
@@ -349,6 +372,7 @@ class Net:
         pb_name = None
         target_list = None
         target_idx = None
+        block_type = None
 
         if base_layer == 'policy':
             pb_prefix = 'policy_heads.'
@@ -378,7 +402,8 @@ class Net:
         elif base_layer == 'input':
             if layers[1] == 'conv':
                 pb_name = 'input.' + convblock_to_bp(weights_name) 
-            
+            elif layers[1] == 'ln_convnext':
+                pb_name = 'input' + encoder_to_bp('ln', weights_name)
             elif layers[1].split(':')[0] == 'kernel':
                 pb_name = 'ip_emb_w'
             elif layers[1].split(':')[0] == 'bias':
@@ -423,7 +448,7 @@ class Net:
                     elif layers[2].split(':')[0] == 'bias':
                         pb_name = 'dense_b'
                 elif layers[1].startswith("ln") :
-                    pb_name = 'ln.' + encoder_to_bp('ln', weights_name)
+                    pb_name = encoder_to_bp('ln', weights_name)
                 elif layers[1].startswith("ma_gating") :
                     pb_name = layers[2]
 
@@ -448,6 +473,14 @@ class Net:
                 elif layers[1] == 'se':
                     pb_name = 'mobilenet.se.' + se_to_bp(layers[-2], weights_name)
 
+            elif block_type == 'convnext':
+                if layers[1] == 'd_conv':
+                    pb_name = 'convnext.d_conv.' + d_conv_to_bp(weights_name)  
+                elif layers[1] == 'ffn':
+                    pb_name = 'convnext.ffn.' + ffn_to_bp(layers[2], weights_name)
+                else:
+                    pb_name = 'convnext.' + encoder_to_bp(layers[1], weights_name)            
+
             elif block_type == 'residual':
                 if layers[1] == '1':
                     pb_name = 'residual.conv1.' + convblock_to_bp(weights_name)
@@ -465,7 +498,7 @@ class Net:
         else:
             raise ValueError('Unable to decode layer {}'.format(name))
 
-        return pb_name, target_list, target_idx
+        return pb_name, target_list, target_idx, block_type
 
     def get_weights_v2(self, names):
         # `names` is a list of Tensorflow tensor names to get from the protobuf.
@@ -484,7 +517,7 @@ class Net:
                 # headcount is set with set_headcount()
                 continue
 
-            pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
+            pb_name, target_list, target_idx, block_type = self.tf_name_to_pb_name(name)
 
             if pb_name is None:
                 raise ValueError("Don't know where to store weight in protobuf: {}".format(name))
@@ -545,7 +578,7 @@ class Net:
                     if name == 'input/conv/kernel:0':
                         weights[:, 109, :, :] /= 99.0
 
-            pb_name, target_list, target_idx = self.tf_name_to_pb_name(name)
+            pb_name, target_list, target_idx, block_type = self.tf_name_to_pb_name(name)
 
             if pb_name is None:
                 raise ValueError("Don't know where to store weight in protobuf: {}".format(name))
@@ -560,7 +593,14 @@ class Net:
                 pb_weights = list_obj[target_idx]
 
             if mask:
-                self.pb.weights.tower[target_idx].mobilenet.d_conv.mask_type = mask
+                if block_type == 'mobilenet':
+                    self.pb.weights.tower[target_idx].mobilenet.d_conv.rook_channels = mask[0]
+                    self.pb.weights.tower[target_idx].mobilenet.d_conv.bishop_channels = mask[1]
+                    self.pb.weights.tower[target_idx].mobilenet.d_conv.knight_channels = mask[2]
+                elif block_type == 'convnext':
+                    self.pb.weights.tower[target_idx].convnext.d_conv.rook_channels = mask[0]
+                    self.pb.weights.tower[target_idx].convnext.d_conv.bishop_channels = mask[1]
+                    self.pb.weights.tower[target_idx].convnext.d_conv.knight_channels = mask[2]
 
             self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
 

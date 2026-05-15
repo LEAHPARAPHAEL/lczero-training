@@ -66,7 +66,9 @@ message Weights {
     optional Layer bn_stddivs = 4;
     optional Layer bn_gammas = 5;
     optional Layer bn_betas = 6;
-    optional string mask_type = 7;
+    optional uint32 rook_channels = 7;
+    optional uint32 bishop_channels = 8;
+    optional uint32 knight_channels = 9;
   }
 
   message LayerNormalization {
@@ -152,6 +154,15 @@ message Weights {
     optional Layer ln2_betas = 6;
   }
 
+  message ConvNext {
+    optional DepthwiseConvBlock d_conv = 1;
+    optional Layer ln1_gammas = 2;
+    optional Layer ln1_betas = 3;
+    optional FFN ffn = 4;
+    optional Layer ln2_gammas = 5;
+    optional Layer ln2_betas = 6;    
+  }
+
   message TowerBlock {
     optional Layer dense_w = 1;
     optional Layer dense_b = 2;
@@ -166,6 +177,7 @@ message Weights {
       MobileNet mobilenet = 9;
       Residual residual = 10;
       EncoderLayer encoder = 11;
+      ConvNext convnext = 12;
     }
   }
 
@@ -244,6 +256,9 @@ message Weights {
   optional Layer cnn_enc_ln_gammas = 49;
   optional Layer cnn_enc_mult_gate = 50;
   optional Layer cnn_enc_add_gate = 51;
+  repeated Residual residual = 52;
+  optional Layer input_ln_betas = 53;
+  optional Layer input_ln_gammas = 54;
 
   // Embedding layer for attention body encoders
   // (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).
@@ -417,13 +432,25 @@ message NetworkFormat {
   }
   optional InputEmbeddingFormat input_embedding = 10;
 
+  optional string first_block = 11;
+  optional uint32 residual_blocks = 12;
+  optional uint32 max_residual_filters = 13;
+  optional uint32 mobilenet_blocks = 14;
+  optional uint32 max_mobilenet_filters = 15;
+  optional uint32 max_mobilenet_dff = 16;
+  optional uint32 convnext_blocks = 17;
+  optional uint32 max_convnext_filters = 18;
+  optional uint32 max_convnext_dff = 19;
+  optional uint32 encoder_blocks = 20;
+
+
   // --- ADDED FOR CHESSFORMER MASKS ---
-  message AttentionMask {
-    optional string piece_type = 1;
-    repeated uint32 head_indices = 2;
-    repeated uint32 layer_indices = 3;
-  }
-  repeated AttentionMask attention_masks = 11;
+  //message AttentionMask {
+  //  optional string piece_type = 1;
+  //  repeated uint32 head_indices = 2;
+  //  repeated uint32 layer_indices = 3;
+  //}
+  //repeated AttentionMask attention_masks = 11;
   // -----------------------------------
 }
 

@@ -98,7 +98,7 @@ def knightFilter():
     return A
 
 
-
+'''
 def getFilter(mask_type, channels):
     
     #print(mask_type)
@@ -157,6 +157,7 @@ def getFilter(mask_type, channels):
     m = np.expand_dims(m, axis=3)
 
     return m
+'''
 '''
 class ChessDepthwiseConv2D(Conv2D):
 
@@ -287,10 +288,48 @@ class ChessDepthwiseConv2D(Conv2D):
         return "no mask"
 '''
 
+def getFilter(mask_descriptor, channels):
+    rook_channels = mask_descriptor[0]
+    bishop_channels = mask_descriptor[1]
+    knight_channels = mask_descriptor[2]
+
+    if rook_channels > 0:
+        r = rookFilter()
+        r = np.expand_dims(r, axis=2)
+        r = np.repeat(r, rook_channels, axis = 2)
+    
+    if bishop_channels > 0:
+        b = bishopFilter()
+        b = np.expand_dims(b, axis=2)
+        b = np.repeat(b, bishop_channels, axis = 2)
+    
+    if knight_channels > 0:
+        k  = knightFilter()
+        k = np.expand_dims(k , axis=2)
+        k  = np.repeat(k , knight_channels, axis = 2)
+
+    if rook_channels > 0 and bishop_channels > 0 and knight_channels > 0:
+        m = np.concatenate([r,b,k], axis=2)
+    elif rook_channels > 0 and bishop_channels > 0:
+        m = np.concatenate([r,b], axis=2)
+    elif rook_channels > 0 and knight_channels > 0:
+        m = np.concatenate([r,k], axis=2)
+    elif bishop_channels > 0 and knight_channels > 0:
+        m = np.concatenate([b,k], axis=2)
+    elif rook_channels > 0:
+        m = r
+    elif bishop_channels > 0:
+        m = b   
+    elif knight_channels > 0:
+        m = k      
+    
+    m = np.expand_dims(m, axis=3)
+
+    return m
 
 class ChessDepthwiseConv2D(Conv2D):
     def __init__(self,
-                 mask_type,
+                 mask,
                  kernel_size,
                  strides=(1, 1),
                  precision=tf.float32,
@@ -325,7 +364,7 @@ class ChessDepthwiseConv2D(Conv2D):
         self.depthwise_regularizer = depthwise_regularizer
         self.depthwise_constraint = depthwise_constraint
         self.bias_initializer = bias_initializer
-        self.mask_type = mask_type
+        self.mask_descriptor = mask
         self.precision = precision
         self.padding = self.padding.upper()
 
@@ -358,9 +397,8 @@ class ChessDepthwiseConv2D(Conv2D):
         else:
             self.bias = None
 
-        if self.mask_type:
-            # Assuming getFilter is defined elsewhere in your depthwise_utils.py
-            m = getFilter(self.mask_type, input_dim)
+        if self.mask_descriptor:
+            m = getFilter(self.mask_descriptor, input_dim)
             self.mask = tf.constant(m, dtype=self.precision)
 
         self.built = True
@@ -399,8 +437,8 @@ class ChessDepthwiseConv2D(Conv2D):
     def get_mask(self):
         return getattr(self, "mask", None)
     
-    def get_mask_type(self):
-        return getattr(self, "mask_type", "")
+    def get_mask_descriptor(self):
+        return getattr(self, "mask_descriptor", None)
 
 
 
