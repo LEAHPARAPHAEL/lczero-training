@@ -586,6 +586,7 @@ class TFProcess:
 
         # experiments with changing have failed
         self.encoder_norm = RMSNorm if self.encoder_rms_norm else tf.keras.layers.LayerNormalization
+        self.encoder_norm_epsilon = self.cfg["training"].get("encoder_norm_epsilon", 1e-3)
 
         if precision == "single":
             self.model_dtype = tf.float32
@@ -2215,7 +2216,7 @@ class TFProcess:
                                        self.max_convnext_dff,
                                        self.encoder_blocks,
                                        self.blocks[0])
-
+        self.net.pb.weights.epsilon = self.encoder_norm_epsilon
         self.net.save_proto(filename)
 
 
@@ -2412,7 +2413,7 @@ class TFProcess:
 
         # skip connection + layernorm
         out1 = self.encoder_norm(
-            name=name+"/ln1")(inputs + attn_output * alpha)
+            name=name+"/ln1", epsilon = self.encoder_norm_epsilon)(inputs + attn_output * alpha)
         activations[name + "/ln1"] = out1
 
         # feed-forward network
@@ -2424,7 +2425,7 @@ class TFProcess:
         activations.update(activations_ffn)
 
         out2 = self.encoder_norm(
-            name=name+"/ln2")(out1 + ffn_output * alpha)
+            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(out1 + ffn_output * alpha)
         activations[name + "/ln2"] = out2
 
         return out2, attn_wts, activations
@@ -2501,7 +2502,7 @@ class TFProcess:
         flow = tf.transpose(flow, perm=[0, 2, 3, 1])
         flow = tf.reshape(flow, [-1, 64, channels])
 
-        flow = self.encoder_norm(name = name + "/ln1")(flow)
+        flow = self.encoder_norm(name = name + "/ln1", epsilon = self.encoder_norm_epsilon)(flow)
 
         alpha = tf.cast(tf.math.pow(
             2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
@@ -2521,7 +2522,7 @@ class TFProcess:
         x_reshaped = tf.transpose(x, perm=[0, 2, 3, 1])
 
         flow = self.encoder_norm(
-            name=name+"/ln2")(x_reshaped + flow * alpha)
+            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(x_reshaped + flow * alpha)
 
         flow = tf.transpose(flow, perm=[0, 3, 1, 2])
 
@@ -2598,7 +2599,7 @@ class TFProcess:
                                         kernel_initializer="glorot_normal",
                                         name=name + "/dense")(flow)
         
-        flow = self.encoder_norm(name=name+"/ln")(flow)
+        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
         flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
@@ -2659,8 +2660,8 @@ class TFProcess:
                                                     data_format='channels_first', use_bias=True, 
                                                     kernel_initializer='glorot_normal',
                                                     name=name + "input/conv")(flow)
-                        flow = self.encoder_norm(name = name + "input/ln_convnext")(flow)
-                        #flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+                        #flow = self.encoder_norm(name = name + "input/ln_convnext", epsilon = self.encoder_norm_epsilon)(flow)
+                        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
                     
                     
                 elif self.blocks[block_idx - 1] == 'T':
@@ -2715,7 +2716,7 @@ class TFProcess:
                     flow = tf.keras.layers.Dense(self.embedding_size, kernel_initializer="glorot_normal",
                                                 activation=self.DEFAULT_ACTIVATION,
                                                 name=name+"input")(flow)
-                    flow = self.encoder_norm(name=name+"input/ln")(flow)
+                    flow = self.encoder_norm(name=name+"input/ln", epsilon = self.encoder_norm_epsilon)(flow)
                     flow = ma_gating(flow, name=name+'input')
 
                     # DeepNorm
@@ -2726,7 +2727,7 @@ class TFProcess:
 
                     ffn_output, activations = self.ffn(flow, self.embedding_size, self.encoder_dff,
                                         xavier_norm, name=name + "input/ffn")
-                    flow = self.encoder_norm(name=name+"input/ffn_ln")(flow + ffn_output * alpha)
+                    flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * alpha)
                     
                 elif self.blocks[block_idx - 1] in ['M', 'R', 'C']:
                     flow = self.cnn_to_encoder(flow, current_channels=self.blocks_dims[block_idx - 1], 
@@ -2741,7 +2742,7 @@ class TFProcess:
                 attn_wts.append(attn_wts_l)
                 activations.update(activations_l)
 
-        if self.blocks[-1] in ['M', 'R']:
+        if self.blocks[-1] in ['M', 'R', 'C']:
             flow = self.cnn_to_encoder(flow, current_channels=self.blocks_dims[-1], 
                                        target_d_model=self.encoder_d_model, 
                                        name=name+"final_reshape")

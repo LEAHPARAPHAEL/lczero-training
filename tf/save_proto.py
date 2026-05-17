@@ -293,7 +293,7 @@ def main(cmd):
     print("Done")
     evaled_steps = tfprocess.global_step
     path = os.path.join(tfprocess.root_dir, tfprocess.cfg["name"])
-    leela_path = path + "-" + "last"
+    leela_path = path + "-" + "150000"
     tfprocess.save_leelaz_weights(leela_path)
 
     return

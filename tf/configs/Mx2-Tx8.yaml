@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8"
+name: "Mx2-Tx8-balanced"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -111,8 +111,10 @@ model:
     # Gating
     use_logit_gating: false
 
-    omit_qkv_biases: true 
-    encoder_rms_norm: false
+    omit_qkv_biases: true # these two increases training speed by ~10% on BT4 
+    encoder_rms_norm: false # without quality degradation
+
+    # Enable or disable BT3 features
     policy_optimistic_st: true
     policy_opponent: true
     policy_next: false
@@ -130,9 +132,8 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    residual_filters: 128
-    mobilenet_filters: 96
-    expanded_ratio: 6
+    blocks: ['M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
+    cnn_blocks_dims: [96, 96]
+    depthwise_masks: [[192, 192, 192], [192, 192, 192]]
+    cnn_dffs: [576, 576]
     se_ratio: 2
-    depthwise_masks: ['rbk', 'rbk', 'rbk', 'rbk']

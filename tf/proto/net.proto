@@ -259,6 +259,7 @@ message Weights {
   repeated Residual residual = 52;
   optional Layer input_ln_betas = 53;
   optional Layer input_ln_gammas = 54;
+  optional float epsilon = 55;
 
   // Embedding layer for attention body encoders
   // (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).

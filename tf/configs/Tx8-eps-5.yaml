@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8"
+name: "Tx8-eps-5"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -68,6 +68,7 @@ training:
     beta_2: 0.999  # these values are only for Nadam
     epsilon: 0.00001 # 1e-7
     sparse: false
+    encoder_norm_epsilon: 0.00001
 
     return_attn_wts: false
     return_activations: false
@@ -111,8 +112,10 @@ model:
     # Gating
     use_logit_gating: false
 
-    omit_qkv_biases: true 
-    encoder_rms_norm: false
+    omit_qkv_biases: true # these two increases training speed by ~10% on BT4 
+    encoder_rms_norm: false # without quality degradation
+
+    # Enable or disable BT3 features
     policy_optimistic_st: true
     policy_opponent: true
     policy_next: false
