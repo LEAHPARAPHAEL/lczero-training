@@ -349,6 +349,8 @@ class Net:
                 return 's1'
             elif l == 'quantize_2':
                 return 's2'
+            elif l == 'd_conv':
+                return 'd_conv.' + d_conv_to_bp(w)
             d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
             return d[w].format(l)
 
@@ -601,6 +603,14 @@ class Net:
                     self.pb.weights.tower[target_idx].convnext.d_conv.rook_channels = mask[0]
                     self.pb.weights.tower[target_idx].convnext.d_conv.bishop_channels = mask[1]
                     self.pb.weights.tower[target_idx].convnext.d_conv.knight_channels = mask[2]
+                elif block_type == 'encoder':
+                    self.pb.weights.tower[target_idx].encoder.ffn.d_conv.rook_channels = mask[0]
+                    self.pb.weights.tower[target_idx].encoder.ffn.d_conv.bishop_channels = mask[1]
+                    self.pb.weights.tower[target_idx].encoder.ffn.d_conv.knight_channels = mask[2]
+                else:
+                    self.pb.weights.ip_emb_ffn.d_conv.rook_channels = mask[0]
+                    self.pb.weights.ip_emb_ffn.d_conv.bishop_channels = mask[1]
+                    self.pb.weights.ip_emb_ffn.d_conv.knight_channels = mask[2]
 
             self.fill_layer_v2(nested_getattr(pb_weights, pb_name), weights)
 

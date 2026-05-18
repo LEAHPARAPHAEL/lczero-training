@@ -537,6 +537,8 @@ class TFProcess:
 
         self.embedding_style = 'new' if self.blocks[0] == 'T' else 'conv'
         self.depthwise_masks = self.cfg['model'].get("depthwise_masks")
+        self.depthwise_ffn = self.cfg["model"].get("depthwise_ffn")
+        self.depthwise_kernels = self.cfg["model"].get("depthwise_kernels", [5 for _ in range(len(self.blocks) + 1)])
         self.dropout_rate = self.cfg["model"].get("dropout_rate", 0.0)
 
         precision = self.cfg["training"].get("precision", "single")
@@ -2348,7 +2350,7 @@ class TFProcess:
         return output, attention_weights, activations
 
     # 2-layer dense feed-forward network in encoder blocks
-    def ffn(self, inputs, emb_size: int, dff: int, initializer, name: str, glu=False):
+    def ffn(self, inputs, emb_size: int, dff: int, initializer, use_depthwise_ffn, mask, kernel_size, name: str, glu=False):
         if glu:
             activation = tf.keras.activations.get("swish")
         elif isinstance(self.ffn_activation, str):
@@ -2366,10 +2368,12 @@ class TFProcess:
         if input_quantize is not None:
             inputs = input_quantize(inputs)
 
-        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=activation,
-                    use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
-        
-        
+        if use_depthwise_ffn:
+            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=None,
+                        use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
+        else:
+            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=activation,
+                                    use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)   
         activations[name + "/dense1"] = dense1
 
         if glu:
@@ -2377,6 +2381,24 @@ class TFProcess:
                     use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
 
             dense1 = dense1 * dense3
+
+        if use_depthwise_ffn :
+            dense1 = tf.reshape(dense1, [-1, 8, 8, dff])
+
+            dense1 = du.ChessDepthwiseConv2D(
+                mask, 
+                kernel_size=[kernel_size,kernel_size],
+                data_format='channels_last',
+                padding='same',
+                use_bias=True,
+                kernel_initializer='glorot_normal',
+                name = name + "/d_conv",
+                precision = self.model_dtype
+            )(dense1)
+
+            dense1 = tf.reshape(dense1, [-1, 64, dff])
+
+            dense1 = activation(dense1)
 
         out_quantize = Quantize(name=name+"/quantize_2", n_bits=self.quantize_activation_bits, quantize_channels=False) if self.quantize_activations else None
         if out_quantize is not None:
@@ -2388,7 +2410,8 @@ class TFProcess:
 
         return out, activations
 
-    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, name: str, training: bool, layer_idx = 0):
+    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, use_depthwise_ffn : bool, mask : list[int], 
+        kernel_size : int, name: str, training: bool, layer_idx = 0):
         # DeepNorm
         alpha = tf.cast(tf.math.pow(
             2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
@@ -2418,7 +2441,7 @@ class TFProcess:
 
         # feed-forward network
         ffn_output, activations_ffn = self.ffn(out1, emb_size, dff,
-                              xavier_norm, name=name + "/ffn", glu=self.glu)
+                              xavier_norm, use_depthwise_ffn, mask, kernel_size, name=name + "/ffn", glu=self.glu)
         ffn_output = tf.keras.layers.Dropout(
             self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
         
@@ -2489,9 +2512,9 @@ class TFProcess:
                 virtual_batch_size=self.virtual_batch_size,
                 name=name)(input)
 
-    def convnext_block(self, x, channels : int, dff : int, name : str, training : bool, mask = None):
+    def convnext_block(self, x, channels : int, dff : int, kernel_size : int, name : str, training : bool, mask = None):
         flow = du.ChessDepthwiseConv2D(mask, 
-                                 kernel_size=[5,5],
+                                 kernel_size=[kernel_size,kernel_size],
                                  data_format='channels_first',
                                  padding='same',
                                  use_bias=True,
@@ -2529,7 +2552,7 @@ class TFProcess:
         return flow
         
 
-    def mobile_net_block(self, x, channels : int, dff : int, name : str, mask = None):
+    def mobile_net_block(self, x, channels : int, dff : int, kernel_size : int, name : str, mask = None):
         m = tf.keras.layers.Conv2D(dff, 1,
                                    data_format='channels_first',
                                    use_bias = False, 
@@ -2540,7 +2563,7 @@ class TFProcess:
         m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(m)
         
         m = du.ChessDepthwiseConv2D(mask, 
-                                 kernel_size=[5,5],
+                                 kernel_size=[kernel_size, kernel_size],
                                  data_format='channels_first',
                                  padding='same',
                                  use_bias=False,
@@ -2635,6 +2658,7 @@ class TFProcess:
         attn_wts = []
         activations = {}
         depthwise_count = 0
+        ffn_count = 0
         
         for block_idx, block_type in enumerate(self.blocks):
             block_name = f"block_{block_idx}_"
@@ -2679,17 +2703,18 @@ class TFProcess:
                         mask = None
                     flow = self.mobile_net_block(flow, channels=block_dims,
                                                  dff = self.cnn_dffs[depthwise_count],  
+                                                 kernel_size = self.depthwise_kernels[depthwise_count],
                                                  name=block_name + "mobilenet",
                                                  mask = mask)
                     depthwise_count += 1
                 elif block_type == 'C':
-
                     if self.depthwise_masks:
                         mask = self.depthwise_masks[depthwise_count]
                     else:
                         mask = None
                     flow = self.convnext_block(flow, channels=block_dims,
-                                                 dff = self.cnn_dffs[depthwise_count], 
+                                                 dff = self.cnn_dffs[depthwise_count],
+                                                 kernel_size = self.depthwise_kernels[depthwise_count], 
                                                  name=block_name + "convnext",
                                                  training = True,
                                                  mask = mask)
@@ -2699,6 +2724,15 @@ class TFProcess:
 
             elif block_type == 'T':
                 if block_idx == 0:
+                    if self.depthwise_ffn:
+                        use_depthwise_ffn = self.depthwise_ffn[ffn_count]
+                    else:
+                        use_depthwise_ffn = False
+
+                    if use_depthwise_ffn and self.depthwise_masks:
+                        mask = self.depthwise_masks[depthwise_count]
+                    else:
+                        mask = None
                     # Initial Dense Embedding + Positional Encoding
                     flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
                     flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
@@ -2726,21 +2760,38 @@ class TFProcess:
                         scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
                     ffn_output, activations = self.ffn(flow, self.embedding_size, self.encoder_dff,
-                                        xavier_norm, name=name + "input/ffn")
+                                        xavier_norm, use_depthwise_ffn, mask, self.depthwise_kernels[depthwise_count], name=name + "input/ffn")
                     flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * alpha)
+
+                    if use_depthwise_ffn:
+                        depthwise_count += 1
+                    ffn_count += 1
                     
                 elif self.blocks[block_idx - 1] in ['M', 'R', 'C']:
                     flow = self.cnn_to_encoder(flow, current_channels=self.blocks_dims[block_idx - 1], 
                                             target_d_model=self.embedding_size,
                                             name=block_name + "cnn-enc")
 
+                if self.depthwise_ffn:
+                    use_depthwise_ffn = self.depthwise_ffn[ffn_count]
+                else:
+                    use_depthwise_ffn = False
+
+                if use_depthwise_ffn and self.depthwise_masks:
+                    mask = self.depthwise_masks[depthwise_count]
+                else:
+                    mask = None
+
                 flow, attn_wts_l, activations_l = self.encoder_layer(
                     flow, self.embedding_size, self.encoder_d_model,
-                    self.encoder_heads, self.encoder_dff,
+                    self.encoder_heads, self.encoder_dff, use_depthwise_ffn, mask, self.depthwise_kernels[depthwise_count],
                     name=block_name + "encoder", training=True, layer_idx=block_idx)
 
                 attn_wts.append(attn_wts_l)
                 activations.update(activations_l)
+                if use_depthwise_ffn:
+                    depthwise_count += 1
+                ffn_count += 1
 
         if self.blocks[-1] in ['M', 'R', 'C']:
             flow = self.cnn_to_encoder(flow, current_channels=self.blocks_dims[-1], 

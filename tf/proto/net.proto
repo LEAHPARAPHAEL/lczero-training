@@ -143,6 +143,7 @@ message Weights {
     optional Layer dense2_w = 3;
     optional Layer dense2_b = 4;
     // reserved 5 - 10 for int8 quantization
+    optional DepthwiseConvBlock d_conv = 11;
   }
 
   message EncoderLayer {
