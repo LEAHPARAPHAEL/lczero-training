@@ -351,6 +351,13 @@ class Net:
                 return 's2'
             elif l == 'd_conv':
                 return 'd_conv.' + d_conv_to_bp(w)
+            '''
+            elif l == 'ln':
+                if w == 'gamma':
+                    return 'ln_gammas'
+                elif w == 'beta':
+                    return 'ln_betas'
+            '''
             d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
             return d[w].format(l)
 

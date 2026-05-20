@@ -338,6 +338,7 @@ class ChessDepthwiseConv2D(Conv2D):
                  data_format=None,
                  activation=None,
                  use_bias=True,
+                 #scale=False,
                  depthwise_initializer='glorot_uniform',
                  bias_initializer='zeros',
                  depthwise_regularizer=None,
@@ -367,6 +368,7 @@ class ChessDepthwiseConv2D(Conv2D):
         self.mask_descriptor = mask
         self.precision = precision
         self.padding = self.padding.upper()
+        #self.scale = scale
 
     def build(self, input_shape):
         # Handle Channel Axis
@@ -400,7 +402,15 @@ class ChessDepthwiseConv2D(Conv2D):
         if self.mask_descriptor:
             m = getFilter(self.mask_descriptor, input_dim)
             self.mask = tf.constant(m, dtype=self.precision)
-
+        '''
+        if self.scale:
+            self.gamma = self.add_weight(
+                shape=(1, 1, int(input_shape[channel_axis]), 1),
+                initializer='ones',
+                name='gamma',
+                trainable=True
+            )
+        '''
         self.built = True
 
     def call(self, inputs):
@@ -408,12 +418,13 @@ class ChessDepthwiseConv2D(Conv2D):
         kernel = self.depthwise_kernel
         if hasattr(self, "mask"):
             kernel = kernel * self.mask
-
-        # 2. Execute Depthwise Conv using TensorFlow Backend
-        # tf.nn expects string format like "NCHW" or "NHWC"
+        '''
+        if self.scale:
+            spatial_norm = tf.sqrt(tf.reduce_sum(tf.square(kernel), axis=[0, 1], keepdims=True) + 1e-5)
+            kernel = kernel / spatial_norm * self.gamma
+        '''
         df = "NCHW" if self.data_format == 'channels_first' else "NHWC"
         
-        # tf.nn.depthwise_conv2d uses 4D strides: [1, stride, stride, 1]
         strides_4d = [1, self.strides[0], self.strides[1], 1]
 
         outputs = tf.nn.depthwise_conv2d(
