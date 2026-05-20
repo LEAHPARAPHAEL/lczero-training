@@ -2538,7 +2538,7 @@ class TFProcess:
             scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
         flow, _ = self.ffn(flow, channels, dff,
-                              xavier_norm, name=name + "/ffn", glu=self.glu)
+                              xavier_norm, False, None, 0, name=name + "/ffn", glu=self.glu)
         flow = tf.keras.layers.Dropout(
             self.dropout_rate, name=name + "/dropout")(flow, training=training)
         
