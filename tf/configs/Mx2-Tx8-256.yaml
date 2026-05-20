@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Mx2-Tx8"
+name: "Mx2-Tx8-256"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -131,7 +131,7 @@ model:
     rep_quant: false
 
     blocks: ['M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    cnn_blocks_dims: [96, 96]
+    cnn_blocks_dims: [256, 256]
     depthwise_masks: [[192, 192, 192], [192, 192, 192]]
     cnn_dffs: [576, 576]
     se_ratio: 2

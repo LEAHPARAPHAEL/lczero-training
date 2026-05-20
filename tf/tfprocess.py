@@ -2384,11 +2384,12 @@ class TFProcess:
 
         if use_depthwise_ffn :
             dense1 = tf.reshape(dense1, [-1, 8, 8, dff])
+            dense1 = tf.transpose(dense1, perm=[0, 3, 1, 2])
 
             dense1 = du.ChessDepthwiseConv2D(
                 mask, 
                 kernel_size=[kernel_size,kernel_size],
-                data_format='channels_last',
+                data_format='channels_first',
                 padding='same',
                 use_bias=True,
                 kernel_initializer='glorot_normal',
@@ -2396,6 +2397,7 @@ class TFProcess:
                 precision = self.model_dtype
             )(dense1)
 
+            dense1 = tf.transpose(dense1, perm=[0, 2, 3, 1])
             dense1 = tf.reshape(dense1, [-1, 64, dff])
 
             dense1 = activation(dense1)
