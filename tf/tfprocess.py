@@ -539,9 +539,19 @@ class TFProcess:
         self.depthwise_masks = self.cfg['model'].get("depthwise_masks")
         self.depthwise_ffn = self.cfg["model"].get("depthwise_ffn")
         self.depthwise_kernels = self.cfg["model"].get("depthwise_kernels", [5 for _ in range(len(self.blocks) + 1)])
+        precision = self.cfg["training"].get("precision", "single")
+        if precision == "single":
+            self.model_dtype = tf.float32
+        elif precision == "half":
+            self.model_dtype = tf.float16
+        else:
+            raise ValueError("Unknown precision: {}".format(precision))
+
+
+
+
         self.dropout_rate = self.cfg["model"].get("dropout_rate", 0.0)
 
-        precision = self.cfg["training"].get("precision", "single")
         loss_scale = self.cfg["training"].get("loss_scale", 128)
         # added as part of Nadam needs added pr, code is near line 317
         self.weight_decay = self.cfg["training"].get("weight_decay", 0.0)
@@ -590,12 +600,7 @@ class TFProcess:
         self.encoder_norm = RMSNorm if self.encoder_rms_norm else tf.keras.layers.LayerNormalization
         self.encoder_norm_epsilon = self.cfg["training"].get("encoder_norm_epsilon", 1e-3)
 
-        if precision == "single":
-            self.model_dtype = tf.float32
-        elif precision == "half":
-            self.model_dtype = tf.float16
-        else:
-            raise ValueError("Unknown precision: {}".format(precision))
+
     
 
         # Scale the loss to prevent gradient underflow
@@ -759,6 +764,16 @@ class TFProcess:
                                        trainable=False,
                                        dtype=tf.int64)
         # -----------------------------------------------
+
+        self.total_sublayers = (2.0 * self.encoder_blocks) + (1.0 * self.convnext_blocks)
+
+        self.deepnorm_alpha = tf.cast(tf.math.pow(self.total_sublayers, -0.25), self.model_dtype)
+
+        beta = tf.cast(tf.math.pow(4.0 * self.total_sublayers, -0.25), self.model_dtype)
+
+        self.deepnorm_initializer = tf.keras.initializers.VarianceScaling(
+            scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
         if self.strategy is not None:
@@ -2283,7 +2298,7 @@ class TFProcess:
 
     # multi-head attention in encoder blocks
 
-    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, initializer, name: str, att_expansion: int=1, layer_idx = 0):
+    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, name: str, att_expansion: int=1, layer_idx = 0):
         depth = d_model * att_expansion
         assert depth % num_heads == 0
 
@@ -2310,7 +2325,7 @@ class TFProcess:
         k = DenseLayer(
             depth, name=name+"/wk", kernel_initializer="glorot_normal", use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
         v = DenseLayer(
-            depth, name=name+"/wv", kernel_initializer=initializer, use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
+            depth, name=name+"/wv", kernel_initializer=self.deepnorm_initializer, use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
 
 
         activations[name + "/wq"] = q
@@ -2345,12 +2360,12 @@ class TFProcess:
         # output = tf.keras.layers.Dense(
         #     emb_size, name=name + "/dense", kernel_initializer=initializer, use_bias=not self.omit_other_biases)(scaled_attention)
 
-        output = DenseLayer(emb_size, name=name + "/dense", kernel_initializer=initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=out_quantize, use_rep_quant=False)(scaled_attention)
+        output = DenseLayer(emb_size, name=name + "/dense", kernel_initializer=self.deepnorm_initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=out_quantize, use_rep_quant=False)(scaled_attention)
         activations[name + "/dense"] = output
         return output, attention_weights, activations
 
     # 2-layer dense feed-forward network in encoder blocks
-    def ffn(self, inputs, emb_size: int, dff: int, initializer, use_depthwise_ffn, mask, kernel_size, name: str, glu=False):
+    def ffn(self, inputs, emb_size: int, dff: int, use_depthwise_ffn, mask, kernel_size, name: str, glu=False):
         if glu:
             activation = tf.keras.activations.get("swish")
         elif isinstance(self.ffn_activation, str):
@@ -2369,15 +2384,15 @@ class TFProcess:
             inputs = input_quantize(inputs)
 
         if use_depthwise_ffn:
-            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=None,
+            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=self.deepnorm_initializer, activation=None,
                         use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
         else:
-            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=activation,
+            dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=self.deepnorm_initializer, activation=activation,
                                     use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)   
         activations[name + "/dense1"] = dense1
 
         if glu:
-            dense3 = DenseLayer(dff, name=name + "/dense3", kernel_initializer=initializer,
+            dense3 = DenseLayer(dff, name=name + "/dense3", kernel_initializer=self.deepnorm_initializer,
                     use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
 
             dense1 = dense1 * dense3
@@ -2406,7 +2421,7 @@ class TFProcess:
         if out_quantize is not None:
             dense1 = out_quantize(dense1)
 
-        out = DenseLayer(emb_size, name=name + "/dense2", kernel_initializer=initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits,
+        out = DenseLayer(emb_size, name=name + "/dense2", kernel_initializer=self.deepnorm_initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits,
                          input_quantize=out_quantize, use_rep_quant=False)(dense1)
         activations[name + "/dense2"] = out
 
@@ -2415,20 +2430,21 @@ class TFProcess:
     def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, use_depthwise_ffn : bool, mask : list[int], 
         kernel_size : int, name: str, training: bool, layer_idx = 0):
         # DeepNorm
+        '''
         alpha = tf.cast(tf.math.pow(
             2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
         beta = tf.cast(tf.math.pow(
             8. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
-
+        '''
 
         activations = {}
 
-        xavier_norm = tf.keras.initializers.VarianceScaling(
-            scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+        #xavier_norm = tf.keras.initializers.VarianceScaling(
+        #    scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
         # multihead attention
         attn_output, attn_wts, activations_mha = self.mha(
-            inputs, emb_size, d_model, num_heads, xavier_norm, name=name + "/mha", layer_idx=layer_idx)
+            inputs, emb_size, d_model, num_heads, name=name + "/mha", layer_idx=layer_idx)
 
         activations.update(activations_mha)
 
@@ -2438,19 +2454,18 @@ class TFProcess:
 
         # skip connection + layernorm
         out1 = self.encoder_norm(
-            name=name+"/ln1", epsilon = self.encoder_norm_epsilon)(inputs + attn_output * alpha)
+            name=name+"/ln1", epsilon = self.encoder_norm_epsilon)(inputs + attn_output * self.deepnorm_alpha)
         activations[name + "/ln1"] = out1
 
         # feed-forward network
-        ffn_output, activations_ffn = self.ffn(out1, emb_size, dff,
-                              xavier_norm, use_depthwise_ffn, mask, kernel_size, name=name + "/ffn", glu=self.glu)
+        ffn_output, activations_ffn = self.ffn(out1, emb_size, dff, use_depthwise_ffn, mask, kernel_size, name=name + "/ffn", glu=self.glu)
         ffn_output = tf.keras.layers.Dropout(
             self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
         
         activations.update(activations_ffn)
 
         out2 = self.encoder_norm(
-            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(out1 + ffn_output * alpha)
+            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(out1 + ffn_output * self.deepnorm_alpha)
         activations[name + "/ln2"] = out2
 
         return out2, attn_wts, activations
@@ -2514,44 +2529,48 @@ class TFProcess:
                 virtual_batch_size=self.virtual_batch_size,
                 name=name)(input)
 
-    def convnext_block(self, x, channels : int, dff : int, kernel_size : int, name : str, training : bool, mask = None):
-        flow = du.ChessDepthwiseConv2D(mask, 
-                                 kernel_size=[kernel_size,kernel_size],
-                                 data_format='channels_first',
-                                 padding='same',
-                                 use_bias=True,
-                                 kernel_initializer='glorot_normal',
-                                 name = name + "/d_conv",
-                                 precision = self.model_dtype)(x)
-    
+    def convnext_block(self, x, channels: int, dff: int, kernel_size: int, name: str, training: bool, mask=None):
+        flow = du.ChessDepthwiseConv2D(
+            mask, 
+            kernel_size=[kernel_size, kernel_size],
+            data_format='channels_first',
+            padding='same',
+            use_bias=True,
+            kernel_initializer='glorot_normal', 
+            name=name + "/d_conv",
+            precision=self.model_dtype
+        )(x)
+
+        flow = tf.keras.layers.LayerNormalization(
+            axis=1, 
+            epsilon=self.encoder_norm_epsilon,
+            name=name + "/ln1"
+        )(flow)
+
         flow = tf.transpose(flow, perm=[0, 2, 3, 1])
         flow = tf.reshape(flow, [-1, 64, channels])
 
-        flow = self.encoder_norm(name = name + "/ln1", epsilon = self.encoder_norm_epsilon)(flow)
-
-        alpha = tf.cast(tf.math.pow(
-            2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
-        beta = tf.cast(tf.math.pow(
-            8. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
-
-        xavier_norm = tf.keras.initializers.VarianceScaling(
-            scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
-
-        flow, _ = self.ffn(flow, channels, dff,
-                              xavier_norm, False, None, 0, name=name + "/ffn", glu=self.glu)
-        flow = tf.keras.layers.Dropout(
-            self.dropout_rate, name=name + "/dropout")(flow, training=training)
+        flow, _ = self.ffn(
+            flow, channels, dff,
+            False, None, 0, 
+            name=name + "/ffn", 
+            glu=self.glu
+        )
         
+        flow = tf.keras.layers.Dropout(self.dropout_rate, name=name + "/dropout")(flow, training=training)
+
         flow = tf.reshape(flow, [-1, 8, 8, channels])
-
-        x_reshaped = tf.transpose(x, perm=[0, 2, 3, 1])
-
-        flow = self.encoder_norm(
-            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(x_reshaped + flow * alpha)
-
         flow = tf.transpose(flow, perm=[0, 3, 1, 2])
 
-        return flow
+        summed_flow = x + flow * self.deepnorm_alpha
+
+        final_flow = tf.keras.layers.LayerNormalization(
+            axis=1, 
+            epsilon=self.encoder_norm_epsilon,
+            name=name + "/ln2"
+        )(summed_flow)
+
+        return final_flow
         
 
     def mobile_net_block(self, x, channels : int, dff : int, kernel_size : int, name : str, mask = None):
@@ -2756,14 +2775,14 @@ class TFProcess:
                     flow = ma_gating(flow, name=name+'input')
 
                     # DeepNorm
-                    alpha = tf.cast(tf.math.pow(2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
-                    beta = tf.cast(tf.math.pow(8. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
-                    xavier_norm = tf.keras.initializers.VarianceScaling(
-                        scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+                    #alpha = tf.cast(tf.math.pow(2. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
+                    #beta = tf.cast(tf.math.pow(8. * (self.encoder_blocks + self.convnext_blocks), -0.25), self.model_dtype)
+                    #xavier_norm = tf.keras.initializers.VarianceScaling(
+                    #    scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
                     ffn_output, activations = self.ffn(flow, self.embedding_size, self.encoder_dff,
-                                        xavier_norm, use_depthwise_ffn, mask, self.depthwise_kernels[depthwise_count], name=name + "input/ffn")
-                    flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * alpha)
+                                        use_depthwise_ffn, mask, self.depthwise_kernels[depthwise_count], name=name + "input/ffn")
+                    flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * self.deepnorm_alpha)
 
                     if use_depthwise_ffn:
                         depthwise_count += 1
