@@ -546,7 +546,7 @@ class Net:
             tensors[tf_name] = w
         return tensors
 
-    def fill_net_v2(self, all_weights, masks, embedding_style):
+    def fill_net_v2(self, all_weights, masks):
         # all_weights is array of [name of weight, numpy array of weights].
         self.pb.format.weights_encoding = pb.Format.LINEAR16
 
@@ -579,13 +579,14 @@ class Net:
                     name = name.replace('stddev', 'variance')
 
             if self.pb.format.network_format.input < pb.NetworkFormat.INPUT_112_WITH_CANONICALIZATION_HECTOPLIES:
-                if embedding_style == "new":
-                    if name == 'input/kernel:0':
-                        weights[:, 109] /= 99.0
-                
-                elif embedding_style == "conv":
-                    if name == 'input/conv/kernel:0':
+                if name == 'input/kernel:0':
+                    weights[:, 109] /= 99.0
+            
+                elif name == 'input/conv/kernel:0':
+                    if weights.ndim == 4:
                         weights[:, 109, :, :] /= 99.0
+                    elif weights.ndim == 2:
+                        weights[:, 109] /= 99.0
 
             pb_name, target_list, target_idx, block_type = self.tf_name_to_pb_name(name)
 

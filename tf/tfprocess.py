@@ -2204,7 +2204,7 @@ class TFProcess:
                     numpy_weights.append([weight.name, weight.numpy()])
                     masks.append(None)
     
-        self.net.fill_net_v2(numpy_weights, masks, self.embedding_style)
+        self.net.fill_net_v2(numpy_weights, masks)
         if hasattr(self, 'attention_masks_cfg'):
             self.net.set_attention_masks(self.attention_masks_cfg)
 
