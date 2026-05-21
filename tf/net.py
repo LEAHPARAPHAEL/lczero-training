@@ -351,15 +351,16 @@ class Net:
                 return 's2'
             elif l == 'd_conv':
                 return 'd_conv.' + d_conv_to_bp(w)
-            '''
             elif l == 'ln':
                 if w == 'gamma':
                     return 'ln_gammas'
                 elif w == 'beta':
                     return 'ln_betas'
-            '''
-            d = {'kernel': '{}_w', 'bias': '{}_b', 's': '{}_s'}
-            return d[w].format(l)
+            elif l == 'dense1':
+                return 'dense1.' + convblock_to_bp(w)
+            elif l == 'dense2':
+                return 'dense2.' + convblock_to_bp(w)
+            raise ValueError("Wrong name for FFN")
 
         def moves_left_to_bp(l, w):
             if l == 'embedding':
@@ -412,7 +413,7 @@ class Net:
             if layers[1] == 'conv':
                 pb_name = 'input.' + convblock_to_bp(weights_name) 
             elif layers[1] == 'ln_convnext':
-                pb_name = 'input' + encoder_to_bp('ln', weights_name)
+                pb_name = 'input_' + encoder_to_bp('ln', weights_name)
             elif layers[1].split(':')[0] == 'kernel':
                 pb_name = 'ip_emb_w'
             elif layers[1].split(':')[0] == 'bias':
@@ -437,7 +438,7 @@ class Net:
                 elif layers[2].split(':')[0] == 'bias':
                     pb_name = 'cnn_enc_dense_b'
             elif layers[1].startswith("ln") :
-                pb_name = 'cnn_enc' + encoder_to_bp('ln', weights_name)
+                pb_name = 'cnn_enc_' + encoder_to_bp('ln', weights_name)
             elif layers[1].startswith("ma_gating") :
                 pb_name = 'cnn_enc.' + layers[2]
 

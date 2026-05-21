@@ -138,12 +138,12 @@ message Weights {
   }
 
   message FFN {
-    optional Layer dense1_w = 1;
-    optional Layer dense1_b = 2;
-    optional Layer dense2_w = 3;
-    optional Layer dense2_b = 4;
+    optional ConvBlock dense1 = 1;
+    optional ConvBlock dense2 = 2;
     // reserved 5 - 10 for int8 quantization
-    optional DepthwiseConvBlock d_conv = 11;
+    optional DepthwiseConvBlock d_conv = 3;
+    optional Layer ln_betas = 4;
+    optional Layer ln_gammas = 11;
   }
 
   message EncoderLayer {
