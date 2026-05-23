@@ -142,8 +142,8 @@ message Weights {
     optional ConvBlock dense2 = 2;
     // reserved 5 - 10 for int8 quantization
     optional DepthwiseConvBlock d_conv = 3;
-    optional Layer ln_betas = 4;
-    optional Layer ln_gammas = 11;
+    //optional Layer ln_betas = 4;
+    //optional Layer ln_gammas = 11;
   }
 
   message EncoderLayer {

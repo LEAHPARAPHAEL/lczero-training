@@ -77,7 +77,7 @@ def plot_training_metrics(model_paths, metrics_to_plot=None, output_path=None):
                 steps = sorted(model_data[metric].keys())
                 values = [model_data[metric][step] for step in steps]
                 
-                plt.plot(steps, values, marker='o', linestyle='-', linewidth=2, label=model_name)
+                plt.plot(steps, values, linestyle='-', linewidth=2, label=model_name)
                 metric_has_data = True
 
         if metric_has_data:
@@ -107,9 +107,12 @@ if __name__ == "__main__":
     
     # 1. List of paths to your models' log files
     MODELS_LOG_PATHS = [
-        "/home/raph/leela/logs/8x384x12h-256.txt",
-        "/home/raph/leela/logs/8x384x12h-2res-256.txt",
-        "/home/raph/leela/logs/8x384x12h-2rbk-relu.txt"
+        "/home/raph/leela/logs/Tx8.txt",
+        "/home/raph/leela/logs/Mx2-Tx8.txt",
+        "/home/raph/leela/logs/Mx4-Tx6.txt",
+        "/home/raph/leela/logs/Mx6-Tx4.txt",
+        "/home/raph/leela/logs/Mx8-Tx2.txt",
+        "/home/raph/leela/logs/Mx10.txt",
     ]
 
     # 2. List of metrics to plot (Set to None to plot ALL found metrics)

@@ -2423,7 +2423,7 @@ class TFProcess:
         if input_quantize is not None:
             inputs = input_quantize(inputs)
 
-        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer="glorot_normal", activation=activation,
+        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=self.deepnorm_initializer, activation=activation,
                     use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
         activations[name + "/dense1"] = dense1
 
@@ -2441,15 +2441,14 @@ class TFProcess:
             data_format='channels_last',
             padding='same',
             use_bias=True,
-            kernel_initializer='glorot_normal',
+            kernel_initializer=self.deepnorm_initializer,
             name = name + "/d_conv",
             precision = self.model_dtype
         )(dense1)
 
         dense1 = tf.reshape(dense1, [-1, 64, dff])
-        dense1 = self.encoder_norm(
-            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(dense1)
-
+        #dense1 = self.encoder_norm(
+        #    name=name+"/ln", epsilon = self.encoder_norm_epsilon)(dense1)
         dense1 = activation(dense1)
 
         out_quantize = Quantize(name=name+"/quantize_2", n_bits=self.quantize_activation_bits, quantize_channels=False) if self.quantize_activations else None

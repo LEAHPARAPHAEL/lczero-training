@@ -351,11 +351,13 @@ class Net:
                 return 's2'
             elif l == 'd_conv':
                 return 'd_conv.' + d_conv_to_bp(w)
+            '''
             elif l == 'ln':
                 if w == 'gamma':
                     return 'ln_gammas'
                 elif w == 'beta':
                     return 'ln_betas'
+            '''
             elif l == 'dense1':
                 return 'dense1.' + convblock_to_bp(w)
             elif l == 'dense2':
@@ -440,7 +442,7 @@ class Net:
             elif layers[1].startswith("ln") :
                 pb_name = 'cnn_enc_' + encoder_to_bp('ln', weights_name)
             elif layers[1].startswith("ma_gating") :
-                pb_name = 'cnn_enc.' + layers[2]
+                pb_name = 'cnn_enc_' + layers[2]
 
         elif base_layer.startswith('block'):
             target_list = 'tower'
