@@ -2612,37 +2612,72 @@ class TFProcess:
         
 
     def mobile_net_block(self, x, channels : int, dff : int, kernel_size : int, name : str, mask = None):
-        m = tf.keras.layers.Conv2D(dff, 1,
+        flow = tf.keras.layers.Conv2D(dff, 1,
                                    data_format='channels_first',
                                    use_bias = False, 
                                    kernel_initializer='glorot_normal',
                                    name = name + "/1/conv2d")(x)
             
-        m = self.batch_norm(m, name + '/1/bn', scale=False)
-        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(m)
+        flow = self.batch_norm(flow, name + '/1/bn', scale=False)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
         
-        m = du.ChessDepthwiseConv2D(mask, 
+        flow = du.ChessDepthwiseConv2D(mask, 
                                  kernel_size=[kernel_size, kernel_size],
                                  data_format='channels_first',
                                  padding='same',
                                  use_bias=False,
                                  kernel_initializer='glorot_normal',
                                  name = name + "/2/conv2d",
-                                 precision = self.model_dtype)(m)
+                                 precision = self.model_dtype)(flow)
 
-        m = self.batch_norm(m, name + '/2/bn', scale=False)
-        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(m)
-        m = tf.keras.layers.Conv2D(channels, 1, padding='same',
+        flow = self.batch_norm(flow, name + '/2/bn', scale=False)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+        flow = tf.keras.layers.Conv2D(channels, 1, padding='same',
                                    data_format='channels_first',
                                    use_bias = False, 
                                    kernel_initializer='glorot_normal',
-                                   name = name + "/3/conv2d")(m)
+                                   name = name + "/3/conv2d")(flow)
 
-        m = self.batch_norm(m, name + '/3/bn', scale=True)
-        m = self.squeeze_excitation(m, channels, name)
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True)
+        flow = self.squeeze_excitation(flow, channels, name)
 
         return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            tf.keras.layers.Add()([m, x]))
+            tf.keras.layers.Add()([flow, x]))
+
+
+
+    def mobilenet_v3_block(self, x, channels: int, dff: int, kernel_size: int, name: str, mask=None):
+        activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
+
+        flow = tf.keras.layers.Conv2D(dff, 1, 
+                                      data_format='channels_first', 
+                                      use_bias=False, 
+                                      kernel_initializer='glorot_normal', 
+                                      name=name + "/1/conv2d")(x)
+        flow = self.batch_norm(flow, name + '/1/bn', scale=True)
+        flow = activation(flow)
+        
+        flow = du.ChessDepthwiseConv2D(mask, 
+                                       kernel_size=[kernel_size, kernel_size], 
+                                       data_format='channels_first', 
+                                       padding='same',
+                                       use_bias=False, 
+                                       kernel_initializer='glorot_normal', 
+                                       name=name + "/2/conv2d", 
+                                       precision=self.model_dtype)(flow)
+        flow = self.batch_norm(flow, name + '/2/bn', scale=True)
+        flow = activation(flow)
+        
+        flow = self.squeeze_excitation(flow, dff, name)
+
+        flow = tf.keras.layers.Conv2D(channels, 1, 
+                                      data_format='channels_first', 
+                                      use_bias=False, 
+                                      kernel_initializer='glorot_normal', 
+                                      name=name + "/3/conv2d")(flow)
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True)
+
+        return tf.keras.layers.Add()([flow, x])
 
     '''
     def x_block(self, x, in_out_channels, x_channels, initializer, name):
@@ -2964,7 +2999,7 @@ class TFProcess:
 
         if block_type == 'M':
             mask, kernel_size, dff = self._get_depthwise_params()
-            flow = self.mobile_net_block(flow, channels=block_dims, dff=dff, 
+            flow = self.mobilenet_v3_block(flow, channels=block_dims, dff=dff, 
                                          kernel_size=kernel_size, name=name + "_mobilenet", mask=mask)
                                          
         elif block_type == 'C':
@@ -3006,7 +3041,7 @@ class TFProcess:
         self._depthwise_count = 0 
         
         for block_idx, block_type in enumerate(self.blocks):
-            block_name = f"block_{block_idx}_{block_type}"
+            block_name = f"block_{block_idx}"
             block_dims = self.blocks_dims[block_idx]
             
             if block_idx == 0:

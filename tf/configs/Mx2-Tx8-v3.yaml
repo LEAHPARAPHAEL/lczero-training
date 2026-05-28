@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Mx2-Tx8-balanced"
+name: "Mx2-Tx8-v3"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -48,7 +48,7 @@ training:
         policy: 1.0
         policy_optimistic_st: 1.0
         policy_soft: 8.0 # loss is much smaller at optimum
-        policy_opponent: 1.0
+        policy_opponent: 0.0
         policy_next: 0.0
         value_winner: 1.0
         value_q: 1.0
@@ -81,12 +81,12 @@ model:
     encoder_heads: 8                    # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
     encoder_d_model: 256                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
-    encoder_dff: 256                    # size of the expansion layer in encoder layer ffn
+    encoder_dff: 384                    # size of the expansion layer in encoder layer ffn
     policy_d_model: 256                  # size of the query and key vectors in final attention layer
     policy_d_opt: 256
     policy_d_soft: 256
-    policy_d_opponent: 256
-    policy_d_next: 256
+    policy_d_opponent: 0
+    policy_d_next: 0
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 
@@ -111,12 +111,10 @@ model:
     # Gating
     use_logit_gating: false
 
-    omit_qkv_biases: true # these two increases training speed by ~10% on BT4 
-    encoder_rms_norm: false # without quality degradation
-
-    # Enable or disable BT3 features
+    omit_qkv_biases: true 
+    encoder_rms_norm: false
     policy_optimistic_st: true
-    policy_opponent: true
+    policy_opponent: false
     policy_next: false
     value_st: true
     value_q: true
@@ -133,7 +131,13 @@ model:
     rep_quant: false
 
     blocks: ['M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    cnn_blocks_dims: [96, 96]
+    cnn_blocks_dims: [256, 256]
     depthwise_masks: [[192, 192, 192], [192, 192, 192]]
     cnn_dffs: [576, 576]
-    se_ratio: 2
+    se_ratio: 4
+    
+    #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
+    #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
+    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    #cnn_dffs: [576, 576]
+    #se_ratio: 2
