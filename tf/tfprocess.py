@@ -1750,9 +1750,6 @@ class TFProcess:
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
 
-	if steps % 100 == 0:
-	    print(f'train step {steps}/{total_stepsself.cfg["training"][
-                    "total_steps"]}') 
 
         if steps % self.cfg["training"][
                 "train_avg_report_steps"] == 0 or steps % self.cfg["training"][
@@ -1795,6 +1792,19 @@ class TFProcess:
             self.last_steps = steps
             for metric in self.train_metrics:
                 metric.reset()
+
+        elif steps % 100 == 0:
+            time_end = time.time()
+            speed = 0
+            if self.time_start:
+                elapsed = time_end - self.time_start
+                steps_elapsed = steps - self.last_steps
+                speed = batch_size * (tf.cast(steps_elapsed, tf.float32) /
+                                      elapsed)
+            print("\n")
+            print("-"*60)
+            print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
+            print(" > ({:g} pos/s)".format(speed))
 
         if self.sparse:  # !!!
             if not hasattr(self, "sparsity_patterns"):
