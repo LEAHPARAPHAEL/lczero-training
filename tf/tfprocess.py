@@ -1750,7 +1750,9 @@ class TFProcess:
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
 
-
+	if steps % 100 == 0:
+	    print(f'train step {steps}/{total_stepsself.cfg["training"][
+                    "total_steps"]}') 
 
         if steps % self.cfg["training"][
                 "train_avg_report_steps"] == 0 or steps % self.cfg["training"][

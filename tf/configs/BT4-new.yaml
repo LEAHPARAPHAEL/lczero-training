@@ -36,7 +36,7 @@ training:
     train_avg_report_steps: 1_000
     total_steps: 100_000
     checkpoint_steps: 5_000
-    shuffle_size: 1_000_000
+    shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true
     lr_values: # schedule is likely outdated
@@ -77,6 +77,7 @@ model:
     policy_embedding_size: 1024
     value_embedding_size: 128
     moves_left_embedding_size: 32                 # number of intermediate attention layers in the policy head
+    encoder_layers: 15
     encoder_heads: 32                   # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
     encoder_d_model: 1024                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads

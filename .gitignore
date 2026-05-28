@@ -112,4 +112,7 @@ tf/proto/*.py
 leelalogs/
 networks/
 .venv/
-.venv
+.venv*.out
+*.err
+*.err
+*.out

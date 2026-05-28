@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=lczero-training
 #SBATCH --account=kwf@v100            # Votre compte d'heures
-#SBATCH --time=00:20:00               # Temps alloué
+#SBATCH --time=5:00:00               # Temps alloué
 #SBATCH --nodes=1                     # 1 nœud
 #SBATCH --ntasks-per-node=1           # 1 tâche
 #SBATCH --cpus-per-task=10            # 10 CPU par GPU
 #SBATCH --gres=gpu:1                  # 1 GPU V100
 #SBATCH -C v100-32g                   # Cartes avec 32 Go de VRAM
-#SBATCH --output=log_train_%j.out     # Fichier de log standard
-#SBATCH --error=err_train_%j.err      # Fichier d'erreurs
+#SBATCH --output=train.out     # Fichier de log standard
+#SBATCH --error=train.err      # Fichier d'erreurs
 
 # --- SÉCURITÉ : Vérification de l'argument ---
 if [ -z "$1" ]; then
@@ -22,14 +22,15 @@ CONFIG_FILE=$1
 # 1. Environnement
 module purge
 module load tensorflow-gpu/py3/2.16.1
-#export TF_USE_LEGACY_KERAS=1
+export TF_USE_LEGACY_KERAS=1
 
 # 2. On se place dans le dossier du code source (SUR LE WORK)
-cd $WORK/lczero-training
+cd $WORK/lczero-training/tf
 
 echo "Début de l'entraînement avec la configuration : $CONFIG_FILE"
 
 # 3. Lancement du code
+protoc -I=. --python_out=. proto/net.proto
 python train.py --cfg $CONFIG_FILE
 
 echo "Entraînement terminé !"
