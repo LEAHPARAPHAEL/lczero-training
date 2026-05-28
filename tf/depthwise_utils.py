@@ -472,3 +472,204 @@ class ApplySqueezeExcitation(tf.keras.layers.Layer):
         return tf.nn.sigmoid(gammas) * x + betas
 
 
+
+def get_fused_chess_mask(precision=tf.float32):
+    r = np.array(rookFilter(), dtype=np.float32)
+    b = np.array(bishopFilter(), dtype=np.float32)
+    k = np.array(knightFilter(), dtype=np.float32)
+
+    m = np.stack([r, b, k], axis=-1)
+    
+    m = np.expand_dims(m, axis=2)
+    
+    return tf.constant(m, dtype=precision)
+
+class FusedChessDepthwiseConv2D(tf.keras.layers.Layer):
+    def __init__(self,
+                 strides=(1, 1),
+                 padding='same',
+                 activation='mish', 
+                 use_bias=True,
+                 data_format='channels_last',  # Added format support
+                 precision=tf.float32,
+                 depthwise_initializer='glorot_uniform',
+                 recombination_initializer='ones', 
+                 **kwargs):
+        super(FusedChessDepthwiseConv2D, self).__init__(**kwargs)
+        
+        self.strides = strides
+        self.padding = padding.upper()
+        self.activation = tf.keras.activations.get(activation)
+        self.use_bias = use_bias
+        self.data_format = data_format
+        self.precision = precision
+        self.depthwise_initializer = tf.keras.initializers.get(depthwise_initializer)
+        self.recombination_initializer = tf.keras.initializers.get(recombination_initializer)
+
+    def build(self, input_shape):
+        # 1. Dynamically identify the channel axis
+        if self.data_format == 'channels_first':
+            channel_axis = 1
+        else:
+            channel_axis = -1
+            
+        self.channels = int(input_shape[channel_axis])
+
+        # Depthwise kernels are ALWAYS [H, W, In_Channels, Multiplier] in TF
+        self.depthwise_kernel = self.add_weight(
+            shape=(5, 5, self.channels, 3),
+            initializer=self.depthwise_initializer,
+            name='depthwise_kernel',
+            trainable=True
+        )
+        
+        # 2. Store weights as (C, 3) to remain format-agnostic in memory
+        self.recombination_weights = self.add_weight(
+            shape=(self.channels, 3),
+            initializer=self.recombination_initializer,
+            name='recombination_weights',
+            trainable=True
+        )
+        
+        if self.use_bias:
+            self.bias = self.add_weight(
+                shape=(self.channels,),
+                initializer='zeros',
+                name='bias',
+                trainable=True
+            )
+        else:
+            self.bias = None
+            
+        self.mask = get_fused_chess_mask(self.precision)
+        self.built = True
+
+    def call(self, inputs):
+        masked_kernel = self.depthwise_kernel * self.mask
+        
+        # 3. Setup format strings and strides
+        if self.data_format == 'channels_first':
+            df = 'NCHW'
+            strides_4d = [1, 1, self.strides[0], self.strides[1]]
+        else:
+            df = 'NHWC'
+            strides_4d = [1, self.strides[0], self.strides[1], 1]
+ 
+        # 4. Execute Depthwise Conv (Expanding internally to 3x)
+        x = tf.nn.depthwise_conv2d(
+            inputs,
+            masked_kernel,
+            strides=strides_4d,
+            padding=self.padding,
+            data_format=df
+        )
+        
+        # 5. Inner Activation (Applied to distinct Rook/Bishop/Knight sums)
+        if self.activation is not None:
+            x = self.activation(x)
+            
+        # 6. Dynamic Reshape and Recombine based on data format
+        shape = tf.shape(x)
+        
+        if self.data_format == 'channels_first':
+            # x shape: (B, C * 3, H, W) -> Reshape to isolate multiplier: (B, C, 3, H, W)
+            x_reshaped = tf.reshape(x, [shape[0], self.channels, 3, shape[2], shape[3]])
+            # Broadcast weights to match: (1, C, 3, 1, 1)
+            w_reshaped = tf.reshape(self.recombination_weights, [1, self.channels, 3, 1, 1])
+            # Multiply and collapse the multiplier axis (axis=2)
+            x_recombined = tf.reduce_sum(x_reshaped * w_reshaped, axis=2)
+            
+        else:
+            # x shape: (B, H, W, C * 3) -> Reshape to isolate multiplier: (B, H, W, C, 3)
+            x_reshaped = tf.reshape(x, [shape[0], shape[1], shape[2], self.channels, 3])
+            # Broadcast weights to match: (1, 1, 1, C, 3)
+            w_reshaped = tf.reshape(self.recombination_weights, [1, 1, 1, self.channels, 3])
+            # Multiply and collapse the multiplier axis (axis=-1)
+            x_recombined = tf.reduce_sum(x_reshaped * w_reshaped, axis=-1)
+        
+        # 7. Add Bias
+        if self.use_bias:
+            x_recombined = tf.nn.bias_add(x_recombined, self.bias, data_format=df)
+            
+        return x_recombined
+
+
+class ExpandedChessDepthwiseConv2D(tf.keras.layers.Layer):
+    def __init__(self,
+                 strides=(1, 1),
+                 padding='same',
+                 activation='mish', 
+                 use_bias=True,
+                 data_format='channels_last', # Added data_format support
+                 precision=tf.float32,
+                 depthwise_initializer='glorot_uniform',
+                 **kwargs):
+        super(ExpandedChessDepthwiseConv2D, self).__init__(**kwargs)
+        
+        self.strides = strides
+        self.padding = padding.upper()
+        self.activation = tf.keras.activations.get(activation)
+        self.use_bias = use_bias
+        self.data_format = data_format
+        self.precision = precision
+        self.depthwise_initializer = tf.keras.initializers.get(depthwise_initializer)
+
+    def build(self, input_shape):
+        # 1. Dynamically identify the channel axis
+        if self.data_format == 'channels_first':
+            channel_axis = 1
+        else:
+            channel_axis = -1
+            
+        self.channels = int(input_shape[channel_axis])
+
+        self.depthwise_kernel = self.add_weight(
+            shape=(5, 5, self.channels, 3),
+            initializer=self.depthwise_initializer,
+            name='depthwise_kernel',
+            trainable=True
+        )
+        
+        if self.use_bias:
+            self.bias = self.add_weight(
+                shape=(self.channels * 3,),
+                initializer='zeros',
+                name='bias',
+                trainable=True
+            )
+        else:
+            self.bias = None
+            
+        self.mask = get_fused_chess_mask(self.precision)
+        self.built = True
+
+    def call(self, inputs):
+        masked_kernel = self.depthwise_kernel * self.mask
+        
+        # 2. Map Keras string format to TensorFlow low-level string format
+        if self.data_format == 'channels_first':
+            df = 'NCHW'
+            # Batch, Channels, Height, Width
+            strides_4d = [1, 1, self.strides[0], self.strides[1]]
+        else:
+            df = 'NHWC'
+            # Batch, Height, Width, Channels
+            strides_4d = [1, self.strides[0], self.strides[1], 1]
+ 
+        # 3. Execute with dynamic formatting
+        x = tf.nn.depthwise_conv2d(
+            inputs,
+            masked_kernel,
+            strides=strides_4d,
+            padding=self.padding,
+            data_format=df
+        )
+        
+        # tf.nn.bias_add natively understands 'NCHW' and 'NHWC' broadcasting
+        if self.use_bias:
+            x = tf.nn.bias_add(x, self.bias, data_format=df)
+            
+        if self.activation is not None:
+            x = self.activation(x)
+            
+        return x

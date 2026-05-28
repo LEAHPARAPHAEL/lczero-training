@@ -351,13 +351,6 @@ class Net:
                 return 's2'
             elif l == 'd_conv':
                 return 'd_conv.' + d_conv_to_bp(w)
-            '''
-            elif l == 'ln':
-                if w == 'gamma':
-                    return 'ln_gammas'
-                elif w == 'beta':
-                    return 'ln_betas'
-            '''
             elif l == 'dense1':
                 return 'dense1.' + convblock_to_bp(w)
             elif l == 'dense2':

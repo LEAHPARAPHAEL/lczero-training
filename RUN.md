@@ -25,3 +25,7 @@ git rebase --continue
 
 
 uv run train.py --cfg configs/Tx8.yaml
+
+
+# Onyxia
+k7yvat5cbtbujdxazuif
