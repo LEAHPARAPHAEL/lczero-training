@@ -29,3 +29,12 @@ uv run train.py --cfg configs/Tx8.yaml
 
 # Onyxia
 k7yvat5cbtbujdxazuif
+
+# Jean-Zay
+
+echo $SCRATCH
+/lustre/fsn1/projects/rech/kwf/uzr96yg
+/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data
+
+echo $WORK
+/lustre/fswork/projects/rech/kwf/uzr96yg
