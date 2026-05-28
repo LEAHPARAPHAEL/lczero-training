@@ -21,7 +21,7 @@ training:
     swa_max_n: 10
     swa_steps: 100
     max_grad_norm: 3.0
-    batch_size: 256
+    batch_size: 1024
     num_batch_splits: 1
     #diff_focus_min: 0.025
     #diff_focus_slope: 3.0
@@ -114,8 +114,8 @@ model:
     omit_qkv_biases: true 
     encoder_rms_norm: false
     policy_optimistic_st: true
-    policy_opponent: true
-    policy_next: true
+    policy_opponent: false
+    policy_next: false
     value_st: true
     value_q: true
     soft_policy: true
