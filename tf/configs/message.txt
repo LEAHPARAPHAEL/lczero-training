@@ -1,0 +1,359 @@
+log_filename: "/mnt/jax-lc0/logs/bt4v18.log"
+data_loader {
+  stage {
+    name: "file_paths"
+    file_path_provider {
+      # Directory with training data files.
+      directory: "/mnt/jax-lc0/training_data/bt4v10/"
+    }
+  }
+  stage {
+    name: "chunk_sources"
+    input: "file_paths"
+    chunk_source_loader {
+      threads: 8          # Threads for loading chunks
+    }
+  }
+  stage {
+    name: "splitter"
+    input: "chunk_sources"
+    chunk_source_splitter {
+      weight: 95
+      output {
+        name: "train"
+        queue_capacity: 16
+      }
+
+      weight: 5
+      output {
+        name: "test"
+        queue_capacity: 768
+        overflow_behavior: KEEP_NEWEST
+      }
+    }
+  }
+  stage {
+    name: "chunk_shuffler"
+    input: "splitter.train"
+    input: "chunk_unpacker.cache"
+    shuffling_chunk_pool {
+      chunk_pool_size: 1000000     # Shuffle buffer size (chunks in memory)
+      source_ingestion_threads: 2  # Threads for ongoing indexing
+      chunk_loading_threads: 24    # Threads for loading chunk data
+      hanse_sampling_threshold: 300
+      hanse_sampling_gamma: 1.0
+      position_cache_size: 10000000
+      caching_threads: 3
+      cachehit_output: { name: "cache" }
+      position_sampling {
+	  diff_focus_q_weight: 6.0
+	  diff_focus_pol_scale: 3.5
+	  diff_focus_alpha: 3.0
+	  diff_focus_beta: 0.025
+	  diff_focus_gamma: 1.0
+	  diff_focus_tau: 1.0
+      }
+    }
+  }
+  stage {
+    name: "rescorer"
+    input: "chunk_shuffler"
+    chunk_rescorer {
+      threads: 5            # Threads for chunk rescoring
+      syzygy_paths: "/mnt/data/syzygy"  # Tablebase search paths (comma-separated)
+      gaviota_paths: "/mnt/data/gaviota"
+      dist_temp: 1.0        # Policy temperature applied during rescoring
+      dist_offset: 0.0      # Policy offset applied during rescoring
+      dtz_boost: 0.0        # DTZ boost for endgame policy tuning
+      new_input_format: -1  # Keep original input format (-1 disables change)
+      deblunder_threshold: 0.10  # Threshold for policy deblundering adjustments
+      deblunder_width: 0.06      # Width controlling smoothing around threshold
+    }
+  }
+  stage {
+    name: "chunk_unpacker"
+    input: "rescorer"
+    chunk_unpacker {
+      # input: "shuffling_chunk_pool"
+      # Probability of sampling each position within a chunk.
+      # position_sampling_rate: 0.03
+      position_count: 1
+      prefetch_count: 30
+      prefetch_output { name: "cache" }
+      position_sampling {
+	  diff_focus_q_weight: 6.0
+	  diff_focus_pol_scale: 3.5
+	  diff_focus_alpha: 3.0
+	  diff_focus_beta: 0.025
+	  diff_focus_gamma: 1.0
+	  diff_focus_tau: 1.0
+      }
+    }
+  }
+  stage {
+    name: "join_cache"
+    input: "chunk_unpacker"
+    input: "chunk_shuffler.cache"
+    join_positions {}
+  }
+  stage {
+    name: "tensor_generator"
+    input: "join_cache"
+    tensor_generator {
+      threads: 1         # Threads for tensor generation
+      batch_size: 1024    # Batch size for tensors
+      output { queue_capacity: 8 } # Output queue for batched tensors
+    }
+  }
+  output: "tensor_generator"
+
+  ##############################################################
+  # Test pipeline
+  ##############################################################
+  stage {
+    name: "test_chunk_shuffler"
+    input: "splitter.test"
+    simple_chunk_extractor {
+      output { queue_capacity: 64 }
+    }
+  }
+  stage {
+    name: "test_rescorer"
+    input: "test_chunk_shuffler"
+    chunk_rescorer {
+      threads: 5            # Threads for chunk rescoring
+      syzygy_paths: "/mnt/data/syzygy"  # Tablebase search paths (comma-separated)
+      dist_temp: 1.0        # Policy temperature applied during rescoring
+      dist_offset: 0.0      # Policy offset applied during rescoring
+      dtz_boost: 0.0        # DTZ boost for endgame policy tuning
+      new_input_format: -1  # Keep original input format (-1 disables change)
+      deblunder_threshold: 0.10  # Threshold for policy deblundering adjustments
+      deblunder_width: 0.06      # Width controlling smoothing around threshold
+    }
+  }
+  stage {
+    name: "test_chunk_unpacker"
+    input: "test_rescorer"
+    chunk_unpacker {
+      # input: "shuffling_chunk_pool"
+      # Probability of sampling each position within a chunk.
+      # position_sampling_rate: 0.03
+      position_count: 1
+      threads: 1          # Threads for unpacking chunks
+    }
+  }
+  stage {
+    name: "test_tensor_generator"
+    input: "test_chunk_unpacker"
+    tensor_generator {
+      threads: 1         # Threads for tensor generation
+      batch_size: 768    # Batch size for tensors
+      output {
+        queue_capacity: 1  # Output queue for batched tensors
+        overflow_behavior: KEEP_NEWEST
+      }
+    }
+  }
+  output: "test:test_tensor_generator"
+}
+model {
+  defaults {
+    compute_dtype: F32
+    activation: ACTIVATION_MISH
+    ffn_activation: ACTIVATION_MISH
+  }
+  embedding { dense_size: 512 embedding_size: 1024 dff: 1536 }
+  encoder {
+    num_blocks: 15
+    dff: 1536
+    d_model: 1024
+    heads: 32
+    smolgen {
+      hidden_channels: 32
+      hidden_size: 256
+      gen_size: 256
+      activation: ACTIVATION_SWISH
+    }
+  }
+  shared_policy_embedding_size: 1024
+
+  policy_head {name: "vanilla" d_model: 1024}
+  policy_head {name: "optimistic_st" d_model: 1024}
+  policy_head {name: "soft" d_model: 256}
+  policy_head {
+    name: "opponent"
+    d_model: 256
+  }
+  value_head {name: "winner" num_channels: 128}
+  value_head {
+    name: "q"
+    num_channels: 128
+    has_error_output: true
+    num_categorical_buckets: 32
+  }
+  value_head {
+    name: "st"
+    num_channels: 128
+    has_error_output: true
+    num_categorical_buckets: 32
+  }
+  movesleft_head {name: "main" num_channels: 32}
+  movesleft_head {name: "progress" num_channels: 32}
+}
+training {
+  schedule {
+   steps_per_network: 500
+   chunks_per_network: 30000
+  }
+  lr_schedule {
+    starting_step: 8513000
+    duration_steps: 5000
+    transition: LINEAR
+    lr: [0, 2e-5]
+  }
+  checkpoint {
+    path: "/mnt/jax-lc0/checkpoints/bt4v18"
+    # path: "/data/d/training/lc0-files/checkpoints/v4/"
+    max_to_keep: 100
+  }
+  optimizer {
+    nadamw { beta_1: 0.9 beta_2: 0.999 epsilon: 1e-7 weight_decay: 1e-4
+	  decay_selector {
+           rule { match: "**/bias" include: false }
+           rule { match: "**/ln*/**" include: false }
+           rule { match: "**/embedding/embedding/**" include: false }
+           # rule { match: "**/policy_heads/**" include: true }
+           # rule { match: "**/value_heads/**" include: true }
+           # rule { match: "**/movesleft_heads/**" include: true }
+           otherwise_include: true
+        }
+	}
+    freeze_selector {
+     # Everything else is free.
+     otherwise_include: false
+    }
+  }
+  max_grad_norm: 3.0  # Global gradient-norm clip; omit or set to 0 to disable.
+  losses {
+    policy {head_name: "vanilla" weight: 1.0 illegal_moves: MASK type: KL}
+    policy {
+      head_name: "optimistic_st"
+      weight: 1.0
+      illegal_moves: MASK
+      type: KL
+      optimistic {
+        value_head_name: "st"
+        value_type: ST
+        strength: 2.0
+        eps: 1e-5
+        alpha: 5
+      }
+    }
+    policy {
+      head_name: "soft"
+      weight: 8.0
+      illegal_moves: MASK
+      type: KL
+      temperature: 4.0
+    }
+    value {head_name: "winner" weight: 1.0}
+    value {head_name: "q" weight: 1.0 value_type: BEST}
+    value_error {head_name: "q" weight: 1.0 value_type: BEST}
+    value_categorical {head_name: "q" weight: 0.1 value_type: BEST}
+    value {head_name: "st" weight: 1.0 value_type: ST}
+    value_error {head_name: "st" weight: 1.0 value_type: ST}
+    value_categorical {head_name: "st" weight: 0.1 value_type: ST}
+    movesleft {
+      head_name: "main"
+      value_type: RESULT
+      component: MOVES_LEFT
+      weight: 1.0
+      scale: 0.05
+      huber_delta: 10.0
+    }
+    movesleft {
+      head_name: "progress"
+      value_type: RESULT
+      component: PLIES_UNTIL_PROGRESS
+      weight: 0.5
+      scale: 0.1
+      huber_delta: 5.0
+    }
+    regularization {
+      weight: 0 # Here for the Tensorboard logging
+      selector {
+         rule { match: "**/bias" include: false }
+         rule { match: "**/ln*/**" include: false }
+         rule { match: "**/embedding/embedding/**" include: false }
+         # rule { match: "**/policy_heads/**" include: true }
+         # rule { match: "**/value_heads/**" include: true }
+         # rule { match: "**/movesleft_heads/**" include: true }
+         otherwise_include: true
+      }
+   }
+  }
+  swa {
+    period_steps: 100
+    num_averages: 100
+  }
+}
+metrics {
+  tensorboard_path: "/mnt/jax-lc0/tensorboard/bt4v18"
+  metric {
+    name: "train"
+    training_batch {}
+  }
+  metric {
+    name: "test"
+    dataloader_output: "test"
+    period: 100
+    after_epoch: true
+  }
+  metric {
+    name: "test-swa"
+    use_swa_model: true
+    dataloader_output: "test"
+    period: 100
+    after_epoch: true
+  }
+  metric {
+    name: "rmsnorm"
+    weights { rms: true }
+  }
+  metric {
+    name: "rmsnorm-swa"
+    use_swa_model: true
+    weights { rms: true }
+  }
+#  metric {
+#    name: "t80data"
+#    period: 100
+#    after_epoch: true
+#    npz_filename: "/home/lc0/npz/test80.npz"
+#  }
+#  metric {
+#    name: "t80data-swa"
+#    use_swa_model: true
+#    period: 100
+#    after_epoch: true
+#    npz_filename: "/home/lc0/npz/test80.npz"
+#  }
+#  metric {
+#    name: "bt4data"
+#    period: 100
+#    after_epoch: true
+#    npz_filename: "/home/lc0/npz/bt4.npz"
+#  }
+#  metric {
+#    name: "bt4data-swa"
+#    use_swa_model: true
+#    period: 100
+#    after_epoch: true
+#    npz_filename: "/home/lc0/npz/bt4.npz"
+#  }
+}
+export {
+  destination_filename: "/mnt/jax-lc0/exported-networks/bt4v4/lc0-{datetime}-{step:08d}.pb.gz"
+  export_swa_model: true
+  upload_training_run: 2
+}

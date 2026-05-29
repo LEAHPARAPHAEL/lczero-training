@@ -30,6 +30,7 @@ import functools
 from net import Net
 from tensorflow.keras.layers import Conv2D
 import re
+import fnmatch
 
 from keras import backend as K
 import depthwise_utils as du
@@ -812,6 +813,18 @@ class TFProcess:
         else:
             self.init_net()
 
+    def get_excluded_decay_names(self):
+        excluded_names = []
+        for w in self.model.trainable_weights:
+            # Note: Keras often appends ':0' to weights, so wildcard matching is perfect here
+            if (fnmatch.fnmatch(w.name, '*bias*') or 
+                fnmatch.fnmatch(w.name, '*ln*/*') or 
+                fnmatch.fnmatch(w.name, '*input/kernel*')):
+                
+                excluded_names.append(w.name)
+                
+        return excluded_names
+
     def init_net(self):
         input_var = tf.keras.Input(shape=(112, 8, 8))
         outputs = self.construct_net(input_var)
@@ -888,8 +901,15 @@ class TFProcess:
             self.optimizer = tf.keras.optimizers.RMSprop(
                 learning_rate=self.active_lr, rho=0.9, momentum=0.0, epsilon=1e-07, centered=True)
         elif self.optimizer_name == "nadam":
+            #excluded_decay_vars = self.get_excluded_decay_names()
             self.optimizer = tf.keras.optimizers.Nadam(
-                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon)
+                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon, weight_decay = self.weight_decay)
+            exclusion_substrings = [
+                            'bias', 
+                            'ln', 
+                            'input/kernel'
+                        ]
+            self.optimizer.exclude_from_weight_decay(var_names=exclusion_substrings)
         else:
             raise ValueError("Unknown optimizer: " + self.optimizer_name)
 
@@ -923,7 +943,7 @@ class TFProcess:
                 n_buckets = self.categorical_value_buckets
             
             # Use a safe float32 epsilon instead of 1e-9
-            epsilon = 1e-5
+            epsilon = self.epsilon
             x = tf.clip_by_value(x, lo, hi - epsilon)
             
             x = (x - lo) / (hi - lo) * n_buckets
@@ -933,10 +953,8 @@ class TFProcess:
         def categorical_value_loss(target, output):
             target = convert_val_to_scalar(target, softmax=False)
             target = split_value_buckets(target)
-            
-            # --- FP32 CAST & CLIPPING ---
-            # Ensure logits are float32 before cross-entropy to prevent exp() overflow
-            output = tf.clip_by_value(output, -20.0, 20.0)
+
+            #output = tf.clip_by_value(output, -20.0, 20.0)
             
             loss = tf.nn.softmax_cross_entropy_with_logits(
                 labels=tf.stop_gradient(target), logits=output)
