@@ -589,21 +589,14 @@ def apply_alpha(qs, alpha, alt_signs=True):
 
     return q_st
 
-import os
-import glob
-import struct
-import gzip
-import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
-
-# --- Set up HPC-friendly Logging ---
-logger = logging.getLogger(__name__)
 
 def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
     v6_struct = struct.Struct(V6_STRUCT_STRING)
     v7_struct = struct.Struct(V7_STRUCT_STRING)
 
     record_size = v6_struct.size
+    # C:/leeladata/train/training-run2-test77-20211214-1618/*.gz
+    # apply ema with alpha
     cd_array = bytearray()
 
     try:
@@ -613,8 +606,7 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
             if len(chunkdata) == 0:
                 return
             version = chunkdata[0:4]
-            if version != V6_VERSION:
-                return
+            assert version == V6_VERSION
 
             n_chunks = len(chunkdata) // record_size
 
@@ -638,7 +630,8 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
             for i in range(n_chunks):
                 new_chunk = bytearray(
                     chunkdata[i*record_size:(i+1)*record_size] + b"\x00" * (v7_struct.size - record_size))
-                
+                if abs(st_q[i]) > 1 + 1e-6:
+                    print(f"Got {st_q[i]}")
                 # root q
                 new_chunk[8352:8356] = struct.pack("f", st_q[i])
                 # root d
@@ -650,20 +643,11 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
                 cd_array += new_chunk
 
     except Exception as e:
-        logger.error(f"Could not read {filename}, got {e}")
-        
+        print(f"Could not read {filename}, got {e}")
     if cd_array == bytearray():
         return
-        
-    # 1. Define a temporary filename
-    tmp_filename = filename + ".tmp"
-    
-    # 2. Write all the data to the temporary file safely
-    with gzip.open(tmp_filename, 'wb') as chunk_file:
+    with gzip.open(filename, 'wb') as chunk_file:
         chunk_file.write(bytes(cd_array))
-        
-    # 3. Atomically overwrite the original file
-    os.replace(tmp_filename, filename)
 
 
 def check_v7_file(filename):
@@ -682,79 +666,92 @@ def check_v7_file(filename):
         for i in range(n_chunks):
             chunk = chunkdata[i*record_size:(i+1)*record_size]
             st_q = struct.unpack("f", chunk[8352:8356])[0]
+            # root d
             st_d = struct.unpack("f", chunk[8356:8360])[0]
 
             opp_play = struct.unpack("H", chunk[8360:8362])[0]
             my_next_play = struct.unpack("H", chunk[8362:8364])[0]
 
-            logger.info(
+            print(
                 f"st_q: {st_q}, st_d: {st_d}, opp_play: {opp_play}, my_next_play: {my_next_play}")
 
 
-def rescore_files(filenames, **kwargs):
-    """Worker function: Processes a chunk of files and returns the count."""
-    count = 0
-    for filename in filenames:
-        rescore_file(filename, **kwargs)
-        count += 1
-    return count
-
-
-def rescore_files_normal(filenames, **kwargs):
+def rescore_files(filenames, progress, task_id, **kwargs):
     i = 0
     for filename in filenames:
         rescore_file(filename, **kwargs)
         i += 1
-        logger.info(f"Processed {i} of {len(filenames)} chunks")
+        progress[task_id] = {"progress": i + 1, "total": len(filenames)}
+
+
+def rescore_files_normal(filenames, **kwargs):
+    n_chunks = 0
+    i = 0
+    for filename in filenames:
+        rescore_file(filename, **kwargs)
+        i += 1
+        print(f"Processed {i} of {len(filenames)} chunks")
 
 
 def rescore(filenames, n_workers=16, n_jobs=1000, **kwargs):
+    from concurrent.futures import ProcessPoolExecutor
+    from rich import progress
+    import multiprocessing
+
     if isinstance(filenames, str):
         if not filenames.endswith(".gz"):
             filenames = filenames + "/*.gz"
+        import glob
         filenames = glob.glob(filenames)
 
-    total_files = len(filenames)
-    if total_files == 0:
-        logger.info("No files found to rescore.")
-        return
+    print(
+        f"Rescoring {len(filenames)} files with {n_workers} workers and {n_jobs} jobs each")
 
-    logger.info(f"Rescoring {total_files} files with {n_workers} workers partitioned into {n_jobs} jobs")
+    with progress.Progress(
+        "[progress.description]{task.description}",
+        progress.BarColumn(),
+        "[progress.percentage]{task.percentage:>3.1f}%",
+        progress.TimeRemainingColumn(),
+        progress.TimeElapsedColumn(),
+        refresh_per_second=1,  # bit slower updates
+    ) as progress:
+        futures = []  # keep track of the jobs
+        with multiprocessing.Manager() as manager:
+            # this is the key - we share some state between our
+            # main process and our worker functions
+            _progress = manager.dict()
+            overall_progress_task = progress.add_task(
+                "[green]All jobs progress:")
 
-    # Prevent creating empty jobs if n_jobs > total_files
-    actual_jobs = min(n_jobs, total_files)
-    if actual_jobs == 0:
-        actual_jobs = 1
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                for n in range(0, n_jobs):  # iterate over the jobs we need to run
+                    # set visible false so we don't have a lot of bars all at once:
+                    task_id = progress.add_task(f"task {n}", visible=False)
+                    lo = n * len(filenames) // n_jobs
+                    hi = min((n + 1) * len(filenames) //
+                             n_jobs, len(filenames))
+                    futures.append(executor.submit(
+                        rescore_files, filenames[lo:hi], progress=_progress, task_id=task_id, **kwargs))
 
-    futures = []
-    
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # 1. Distribute chunks of files to the workers
-        for n in range(0, actual_jobs):
-            lo = n * total_files // actual_jobs
-            hi = min((n + 1) * total_files // actual_jobs, total_files)
-            
-            if lo < hi:
-                chunk = filenames[lo:hi]
-                futures.append(executor.submit(rescore_files, chunk, **kwargs))
+                # monitor the progress:
+                while (n_finished := sum([future.done() for future in futures])) < len(
+                    futures
+                ):
+                    progress.update(
+                        overall_progress_task, completed=n_finished, total=len(
+                            futures)
+                    )
+                    for task_id, update_data in _progress.items():
+                        latest = update_data["progress"]
+                        total = update_data["total"]
+                        # update the progress bar for this task:
+                        progress.update(
+                            task_id,
+                            completed=latest,
+                            total=total,
+                            visible=latest < total,
+                        )
 
-        # 2. Monitor progress as chunks finish
-        completed_files = 0
-        completed_jobs = 0
-        last_log_percent = 0
-        
-        for future in as_completed(futures):
-            try:
-                # The worker returns the number of files it successfully processed
-                files_processed = future.result()
-                completed_files += files_processed
-                completed_jobs += 1
-                
-                # Log cleanly every ~10% of jobs completed
-                percent = int((completed_jobs / actual_jobs) * 100)
-                if percent >= last_log_percent + 10 or completed_jobs == actual_jobs:
-                    logger.info(f"Rescore Progress: {percent}% ({completed_files}/{total_files} files completed)")
-                    last_log_percent = percent
-                    
-            except Exception as e:
-                logger.error(f"A multiprocessing batch failed with error: {e}")
+                # raise any errors:
+                for future in futures:
+                    future.result()
