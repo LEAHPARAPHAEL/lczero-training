@@ -15,7 +15,7 @@ dataset:
   test_workers: 2
   fast_chunk_loading: false
 training:
-    precision: single
+    precision: half
     weight_decay: 0.0001
     swa: false
     swa_output: false

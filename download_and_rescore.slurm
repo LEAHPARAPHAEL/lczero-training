@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=download_and_rescore
 #SBATCH --partition=prepost           # LA commande magique (Gratuit + Internet)
-#SBATCH --account=kwf@cpu             # Votre compte (utilisez @cpu ou @v100 selon ce qui passe)
+#SBATCH --account=kwf@v100             # Votre compte (utilisez @cpu ou @v100 selon ce qui passe)
 #SBATCH --time=10:00:00               # Jusqu'à 20h autorisées sur prepost
 #SBATCH --nodes=1                     # 1 nœud
 #SBATCH --ntasks-per-node=1           # 1 tâche
@@ -11,7 +11,7 @@
 
 # On charge l'environnement Python si nécessaire
 module purge
-module load python/3.12.2
+module load python/3.12.7
 
 # On se place dans le code
 cd $WORK/lczero-training
