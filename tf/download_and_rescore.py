@@ -19,6 +19,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def enforce_v7_batch(filepaths):
+    """
+    Scans a list of files. If a file is not strictly V7 (or is unreadable), 
+    it is deleted. Returns the number of successfully verified V7 files.
+    """
+    V7_VERSION = b'\x07\x00\x00\x00' # Struct packed integer 7
+    valid_v7_count = 0
+    
+    for file_path in filepaths:
+        if not os.path.exists(file_path):
+            continue # File was already deleted by chunkparser
+            
+        is_valid = False
+        try:
+            with gzip.open(file_path, 'rb') as f:
+                if f.read(4) == V7_VERSION:
+                    is_valid = True
+        except Exception:
+            pass # Unreadable or corrupted GZIP
+            
+        if is_valid:
+            valid_v7_count += 1
+        else:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+                
+    return valid_v7_count
+
 def clean_tmp_files(directory):
     """Deletes any incomplete .tmp files from a previous crashed run."""
     tmp_files = glob.glob(os.path.join(directory, "**/*.tmp"), recursive=True)
@@ -186,16 +217,22 @@ def download_extract_and_rescore(index_url, base_dir, target_games, max_gb, trai
             if current_batch_train_files:
                 logger.info(f"Rescoring {len(current_batch_train_files)} Training files from {clean_file_name}...")
                 rescore(current_batch_train_files)
+                # Sweep and get the TRUE count of files that survived
+                local_train_count = enforce_v7_batch(current_batch_train_files)
                 
             if current_batch_test_files:
                 logger.info(f"Rescoring {len(current_batch_test_files)} Testing files from {clean_file_name}...")
                 rescore(current_batch_test_files)
+                # Sweep and get the TRUE count of files that survived
+                local_test_count = enforce_v7_batch(current_batch_test_files)
                 
             # --- PHASE D: Commit State & Cleanup ---
             state["train_games_extracted"] += local_train_count
             state["test_games_extracted"] += local_test_count
             state["total_games_extracted"] += (local_train_count + local_test_count)
-            state["total_bytes_extracted"] += local_bytes
+            # Note: local_bytes might be slightly off now due to deleted files, 
+            # but it is close enough for a safe disk-space ceiling.
+            state["total_bytes_extracted"] += local_bytes 
             state["processed_archives"].append(file_name)
             
             save_state(state_file, state)
@@ -220,7 +257,7 @@ if __name__ == "__main__":
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
     TARGET_GAMES = 10000000
-    MAX_DISK_SPACE_GB = 200 
+    MAX_DISK_SPACE_GB = 400
     TRAIN_RATIO = 0.95  
     
     download_extract_and_rescore(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO)

@@ -653,7 +653,15 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
         logger.error(f"Could not read {filename}, got {e}")
         
     if cd_array == bytearray():
+        # CONVERSION FAILED: Delete the original file so V6 doesn't pollute the dataset
+        try:
+            os.remove(filename)
+        except OSError:
+            pass
         return
+        
+    # 1. Define a temporary filename
+    tmp_filename = filename + ".tmp"
         
     # 1. Define a temporary filename
     tmp_filename = filename + ".tmp"
