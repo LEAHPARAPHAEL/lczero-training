@@ -33,7 +33,7 @@ training:
     test_steps: 2_000
     disable_pb_checkpointing: false
     checkpoint_activations: false
-    num_test_positions: 50_000
+    #num_test_positions : 50_000
     train_avg_report_steps: 1_000
     total_steps: 100_000
     checkpoint_steps: 1_000

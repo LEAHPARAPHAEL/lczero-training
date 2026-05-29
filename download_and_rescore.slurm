@@ -11,10 +11,10 @@
 
 # On charge l'environnement Python si nécessaire
 module purge
-module load python/3.12.7
+module load tensorflow-gpu/py3/2.16.1
 
 # On se place dans le code
-cd $WORK/lczero-training
+cd $WORK/lczero-training/tf
 
 echo "Begin downloading and rescoring on the fly..."
 
