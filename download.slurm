@@ -5,7 +5,7 @@
 #SBATCH --time=10:00:00               # Jusqu'à 20h autorisées sur prepost
 #SBATCH --nodes=1                     # 1 nœud
 #SBATCH --ntasks-per-node=1           # 1 tâche
-#SBATCH --cpus-per-task=4             # Demandez plusieurs cœurs pour accélérer le rescoring
+#SBATCH --cpus-per-task=8            # Demandez plusieurs cœurs pour accélérer le rescoring
 #SBATCH --output=download.out
 #SBATCH --error=download.err
 
