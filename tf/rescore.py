@@ -5,8 +5,8 @@ from chunkparser import rescore
 
 def main():
     # Define absolute paths using os.path.expanduser
-    train_dir = os.path.expanduser("/home/raph/leela/data/train/*/")
-    test_dir = os.path.expanduser("/home/raph/leela/data/test/*/")
+    train_dir = os.path.expanduser("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/*/")
+    test_dir = os.path.expanduser("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/test/*/")
     
     # Grab all the .gz files
     train_files = glob.glob(train_dir + "*.gz")
