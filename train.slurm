@@ -4,7 +4,7 @@
 #SBATCH --time=5:00:00               # Temps alloué
 #SBATCH --nodes=1                     # 1 nœud
 #SBATCH --ntasks-per-node=1           # 1 tâche
-#SBATCH --cpus-per-task=10            # 10 CPU par GPU
+#SBATCH --cpus-per-task=16            # 10 CPU par GPU
 #SBATCH --gres=gpu:1                  # 1 GPU V100
 #SBATCH -C v100-32g                   # Cartes avec 32 Go de VRAM
 #SBATCH --output=train.out     # Fichier de log standard

@@ -11,7 +11,7 @@ dataset:
     - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/training*/'
   input_test:
     - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/test/training*/'
-  train_workers: 6
+  train_workers: 8
   test_workers: 2
   fast_chunk_loading: false
 training:
@@ -30,7 +30,7 @@ training:
     renorm: true
     renorm_max_r: 1.0
     renorm_max_d: 0.0
-    test_steps: 2_000
+    test_steps: 5_000
     disable_pb_checkpointing: false
     checkpoint_activations: false
     #num_test_positions : 50_000

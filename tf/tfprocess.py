@@ -1345,7 +1345,7 @@ class TFProcess:
         self.manager = tf.train.CheckpointManager(
             self.checkpoint,
             directory=self.root_dir,
-            max_to_keep=10,
+            max_to_keep=50,
             keep_checkpoint_every_n_hours=24,
             checkpoint_name=self.cfg["name"])
 
