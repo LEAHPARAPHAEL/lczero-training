@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=lczero-training
 #SBATCH --account=kwf@v100            # Votre compte d'heures
-#SBATCH --time=5:00:00               # Temps alloué
+#SBATCH --time=20:00:00               # Temps alloué
 #SBATCH --nodes=1                     # 1 nœud
 #SBATCH --ntasks-per-node=1           # 1 tâche
 #SBATCH --cpus-per-task=16            # 10 CPU par GPU
