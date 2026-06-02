@@ -517,7 +517,7 @@ class FusedChessDepthwiseConv2D(tf.keras.layers.Layer):
 
         # Depthwise kernels are ALWAYS [H, W, In_Channels, Multiplier] in TF
         self.depthwise_kernel = self.add_weight(
-            shape=(5, 5, self.channels, 3),
+            shape=(5, 5, self.channels, 1), 
             initializer=self.depthwise_initializer,
             name='depthwise_kernel',
             trainable=True

@@ -1811,6 +1811,7 @@ class TFProcess:
             for metric in self.train_metrics:
                 metric.reset()
 
+        '''
         elif steps % 100 == 0:
             time_end = time.time()
             speed = 0
@@ -1823,7 +1824,7 @@ class TFProcess:
             print("-"*60)
             print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
             print(" > ({:g} pos/s)".format(speed))
-
+        '''
         if self.sparse:  # !!!
             if not hasattr(self, "sparsity_patterns"):
                 self.set_sparsity_patterns()
@@ -3029,7 +3030,7 @@ class TFProcess:
 
         if block_type == 'M':
             mask, kernel_size, dff = self._get_depthwise_params()
-            flow = self.mobilenet_v3_block(flow, channels=block_dims, dff=dff, 
+            flow = self.mobile_net_block(flow, channels=block_dims, dff=dff, 
                                          kernel_size=kernel_size, name=name + "_mobilenet", mask=mask)
                                          
         elif block_type == 'C':
