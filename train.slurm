@@ -1,16 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=lczero-training
-#SBATCH --account=kwf@v100            # Votre compte d'heures
-#SBATCH --time=20:00:00               # Temps alloué
-#SBATCH --nodes=1                     # 1 nœud
-#SBATCH --ntasks-per-node=1           # 1 tâche
-#SBATCH --cpus-per-task=16            # 10 CPU par GPU
-#SBATCH --gres=gpu:1                  # 1 GPU V100
-#SBATCH -C v100-32g                   # Cartes avec 32 Go de VRAM
-#SBATCH --output=train.out     # Fichier de log standard
-#SBATCH --error=train.err      # Fichier d'erreurs
+#SBATCH --account=kwf@v100
+#SBATCH --time=20:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH -C v100-32g
+#SBATCH --output=logs/default_job.out
+#SBATCH --error=logs/default_job.err
 
-# --- SÉCURITÉ : Vérification de l'argument ---
 if [ -z "$1" ]; then
     echo "Erreur : Aucun fichier de configuration n'a été fourni."
     echo "Utilisation : sbatch train.slurm <fichier_config.yaml>"
@@ -18,19 +17,20 @@ if [ -z "$1" ]; then
 fi
 
 CONFIG_FILE=$1
+CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 
-# 1. Environnement
 module purge
 module load tensorflow-gpu/py3/2.16.1
 export TF_USE_LEGACY_KERAS=1
 
-# 2. On se place dans le dossier du code source (SUR LE WORK)
+mkdir -p logs/$CONFIG_NAME
+
 cd $WORK/lczero-training/tf
 
-echo "Début de l'entraînement avec la configuration : $CONFIG_FILE"
+echo "Début de l'entraînement avec la configuration : $CONFIG_NAME"
 
-# 3. Lancement du code
 protoc -I=. --python_out=. proto/net.proto
-python train.py --cfg $CONFIG_FILE
 
-echo "Entraînement terminé !"
+python train.py --cfg $CONFIG_FILE > ../logs/$CONFIG_NAME/run.out 2> ../logs/$CONFIG_NAME/run.err
+
+echo "Entraînement terminé pour $CONFIG_NAME !"

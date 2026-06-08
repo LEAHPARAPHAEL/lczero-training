@@ -550,7 +550,8 @@ class TFProcess:
         self.depthwise_masks = self.cfg['model'].get("depthwise_masks")
         self.depthwise_ffn = self.cfg["model"].get("depthwise_ffn")
         self.depthwise_kernels = self.cfg["model"].get("depthwise_kernels", [5 for _ in range(len(self.blocks) + 1)])
-        self.use_cnn_enc_transition = self.cfg["model"].get("use_cnn_enc_transition", True)
+        self.use_cnn_enc_dense = self.cfg["model"].get("use_cnn_enc_dense", False)
+        self.use_cnn_enc_ln = self.cfg["model"].get("use_cnn_enc_ln", True)
         precision = self.cfg["training"].get("precision", "single")
         if precision == "single":
             self.model_dtype = tf.float32
@@ -2888,13 +2889,13 @@ class TFProcess:
         flow = tf.transpose(flow, perm=[0, 2, 3, 1])
         flow = tf.reshape(flow, [-1, 64, current_channels])
         
-        if current_channels != target_d_model or self.use_cnn_enc_transition:
+        if current_channels != target_d_model or self.use_cnn_enc_dense:
             flow = tf.keras.layers.Dense(target_d_model, 
                                         kernel_initializer="glorot_normal",
                                         name=name + "/dense")(flow)
         
-        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-        flow = ma_gating(flow, name=name+'/ma_gating')
+        #flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+        #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_encoder(self, flow, current_channels, target_d_model, name):
