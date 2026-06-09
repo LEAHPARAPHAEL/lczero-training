@@ -2894,8 +2894,9 @@ class TFProcess:
                                         kernel_initializer="glorot_normal",
                                         name=name + "/dense")(flow)
         
-        #flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-        #flow = ma_gating(flow, name=name+'/ma_gating')
+        if self.use_cnn_enc_ln:
+            flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+            flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_encoder(self, flow, current_channels, target_d_model, name):

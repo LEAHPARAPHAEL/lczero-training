@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Mx10-Tx8"
+name: "Mx6-Tx9-1024"
 gpu: all
 dataset:
   num_chunks: 500_000_000
@@ -131,21 +131,19 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    blocks: ['M', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    cnn_blocks_dims: [512, 512, 512, 512, 512, 512, 512, 512, 512, 512]
+    blocks: ['M', 'M', 'M', 'M', 'M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
+    cnn_blocks_dims: [1024, 1024, 1024, 1024, 1024, 1024]
     depthwise_masks: [[640, 640, 640], 
-                      [640, 640, 640], 
-                      [640, 640, 640], 
-                      [640, 640, 640], 
-                      [640, 640, 640],
                       [640, 640, 640], 
                       [640, 640, 640], 
                       [640, 640, 640], 
                       [640, 640, 640], 
                       [640, 640, 640]]
-    cnn_dffs: [1920, 1920, 1920, 1920, 1920, 1920, 1920, 1920, 1920, 1920]
+    cnn_dffs: [1920, 1920, 1920, 1920, 1920, 1920]
     se_ratio: 2
     
+    use_cnn_enc_dense: false
+    use_cnn_enc_ln: true
     #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
     #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
     #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]

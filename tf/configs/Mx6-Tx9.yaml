@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Mx6-Tx9-1920"
+name: "Mx6-Tx9"
 gpu: all
 dataset:
   num_chunks: 500_000_000
