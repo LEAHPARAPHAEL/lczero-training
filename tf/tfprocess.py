@@ -1945,7 +1945,7 @@ class TFProcess:
             #tf.saved_model.save(self.model, leela_path)
             
             # Save playable Leela .pb format
-            if not self.cfg["training"].get("disable_pb_checkpointing") and steps % 50000 == 0:
+            if not self.cfg["training"].get("disable_pb_checkpointing") and steps == self.cfg["training"]["total_steps"]:
                 self.save_leelaz_weights(leela_path)
 
             # === 2. SWA WEIGHTS SAVING (Protected!) ===
