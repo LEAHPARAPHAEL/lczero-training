@@ -145,7 +145,10 @@ class Net:
                             max_convnext_filters,
                             max_convnext_dff,
                             encoder_blocks,
-                            first_block) :
+                            first_block,
+                            prenorm,
+                            epsilon
+                            ) :
 
         self.pb.format.network_format.first_block = first_block
         self.pb.format.network_format.residual_blocks = residual_blocks
@@ -157,6 +160,8 @@ class Net:
         self.pb.format.network_format.convnext_blocks = convnext_blocks
         self.pb.format.network_format.max_convnext_filters = max_convnext_filters
         self.pb.format.network_format.max_convnext_dff = max_convnext_dff
+        self.pb.format.network_format.prenorm = prenorm
+        self.pb.weights.epsilon = epsilon
 
     def activation(self, name):
         if name == "relu":

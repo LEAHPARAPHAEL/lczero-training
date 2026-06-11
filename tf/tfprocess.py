@@ -2283,8 +2283,9 @@ class TFProcess:
                                        self.max_convnext_filters,
                                        self.max_convnext_dff,
                                        self.encoder_blocks,
-                                       self.blocks[0])
-        self.net.pb.weights.epsilon = self.encoder_norm_epsilon
+                                       self.blocks[0],
+                                       self.prenorm,
+                                       self.encoder_norm_epsilon)
         self.net.save_proto(filename)
 
 

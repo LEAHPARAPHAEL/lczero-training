@@ -444,6 +444,7 @@ message NetworkFormat {
   optional uint32 max_convnext_filters = 18;
   optional uint32 max_convnext_dff = 19;
   optional uint32 encoder_blocks = 20;
+  optional bool prenorm = 21;
 
 
   // --- ADDED FOR CHESSFORMER MASKS ---

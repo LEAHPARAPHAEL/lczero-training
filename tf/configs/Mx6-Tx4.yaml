@@ -130,6 +130,8 @@ model:
     quantize_channels: false
     rep_quant: false
 
+    use_cnn_enc_ln: true
+
     blocks: ['M', 'M', 'M', 'M', 'M', 'M', 'T', 'T', 'T', 'T']
     cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
     depthwise_masks: [[192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192]]
