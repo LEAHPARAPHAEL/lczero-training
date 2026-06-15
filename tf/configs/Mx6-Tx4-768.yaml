@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-LNDW"
+name: "Mx6-Tx4-768"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -33,9 +33,9 @@ training:
     disable_pb_checkpointing: false
     checkpoint_activations: false
     num_test_positions: 50_000
-    train_avg_report_steps: 2_000
+    train_avg_report_steps: 1_000
     total_steps: 150_000
-    checkpoint_steps: 2_000
+    checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true
@@ -130,11 +130,10 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    blocks: ['L', 'L', 'L', 'L', 'L', 'L', 'L', 'L']
-    #cnn_blocks_dims: [96, 96]
-    
-    depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
-    embedding_ffn: 'L'
-    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
-    #cnn_dffs: [576, 576]
+    use_cnn_enc_ln: true
+
+    blocks: ['M', 'M', 'M', 'M', 'M', 'M', 'T', 'T', 'T', 'T']
+    cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
+    depthwise_masks: [[256, 256, 256], [256, 256, 256], [256, 256, 256], [256, 256, 256], [256, 256, 256], [256, 256, 256]]
+    cnn_dffs: [768, 768, 768, 768, 768, 768]
     se_ratio: 2

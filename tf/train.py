@@ -292,6 +292,8 @@ def main(cmd):
     tfprocess.restore()
     print("Done")
 
+    tfprocess.benchmark_vram(batch_splits=batch_splits)
+
     # If number of test positions is not given
     # sweeps through all test chunks statistically
     # Assumes average of 10 samples per test game.

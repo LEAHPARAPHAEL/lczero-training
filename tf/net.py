@@ -257,6 +257,7 @@ class Net:
         def d_conv_to_bp(w):
             w = w.split(':')[0]
             d = {
+                'kernel': 'weights',
                 'depthwise_kernel': 'weights',
                 'gamma': 'bn_gammas',
                 'beta': 'bn_betas',
