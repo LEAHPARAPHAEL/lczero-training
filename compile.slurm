@@ -13,8 +13,8 @@ echo "Starting compilation..."
 
 # 1. Nettoyage et chargement de TOUTE la stack nécessaire
 module purge
-module load gcc/12.3.0             # Version stable requise pour le C++ moderne
-module load cuda/12.1.1            # Fournit le binaire 'nvcc'
+module load cuda/12.8.0 
+module load gcc/13.3.0         # Fournit le binaire 'nvcc'
 module load tensorflow-gpu/py3/2.16.1
 export TF_USE_LEGACY_KERAS=1
 
