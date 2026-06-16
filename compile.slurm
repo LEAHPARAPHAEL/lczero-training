@@ -11,10 +11,14 @@
 
 echo "Starting compilation..."
 
-# 1. Nettoyage et chargement de TOUTE la stack nécessaire
+# 1. On nettoie tout
 module purge
-module load cuda/12.8.0 
-module load gcc/13.3.0         # Fournit le binaire 'nvcc'
+
+# 2. ON CHARGE LES PRÉREQUIS EXACTS DEMANDÉS PAR TENSORFLOW (Dans le bon ordre)
+module load gcc/12.2.0
+module load cuda/12.2.0
+
+# 3. On charge enfin TensorFlow
 module load tensorflow-gpu/py3/2.16.1
 export TF_USE_LEGACY_KERAS=1
 
