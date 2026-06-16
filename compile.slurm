@@ -31,21 +31,15 @@ cd $WORK/lczero-training/tf/custom_ops 2>/dev/null || cd tf/custom_ops
 LAYER_NAME=${1:-"depthwise"}
 echo "Compiling custom TensorFlow layer: '${LAYER_NAME}'"
 
-echo "Extracting TensorFlow and Eigen flags..."
-TF_CFLAGS=( $(python -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))') )
-TF_LFLAGS=( $(python -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))') )
+# 2. Interception des flags TensorFlow
+TF_CFLAGS=( $(python3 -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))') )
+TF_LFLAGS=( $(python3 -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))') )
 
-# L'ASTUCE : On récupère le chemin vers le dossier site-packages de TensorFlow
-TF_INC=$(python -c 'import tensorflow as tf; print(tf.sysconfig.get_include())')
-
-# On crée un alias d'inclusion pour Eigen (souvent situé dans external/eigen_archive)
-EIGEN_INC="${TF_INC}/external/eigen_archive"
-
-# 2. Compilation CUDA avec nvcc
+# 3. Compilation CUDA
+# Remplacement de -arch=native par sm_70 (V100) ou sm_80 (A100)
 echo "Running nvcc..."
 nvcc -c -o "${LAYER_NAME}.cu.o" "${LAYER_NAME}.cu.cc" \
   "${TF_CFLAGS[@]}" \
-  -I"${TF_INC}" -I"${EIGEN_INC}" \
   -D GOOGLE_CUDA=1 \
   -x cu \
   -Xcompiler -fPIC \
@@ -57,15 +51,14 @@ nvcc -c -o "${LAYER_NAME}.cu.o" "${LAYER_NAME}.cu.cc" \
   -gencode arch=compute_89,code=sm_89 \
   -gencode arch=compute_90,code=sm_90
 
-# 3. Assemblage final avec g++
+# 4. Assemblage final en bibliothèque partagée (.so)
 echo "Running g++ linker..."
 g++ -shared "${LAYER_NAME}.cc" "${LAYER_NAME}.cu.o" -o "${LAYER_NAME}.so" \
   -fPIC \
   "${TF_CFLAGS[@]}" \
-  -I"${TF_INC}" -I"${EIGEN_INC}" \
   "${TF_LFLAGS[@]}" \
   -O2
-  
+
 echo "Successfully generated ${LAYER_NAME}.so"
 echo "Compilation over !"
 
