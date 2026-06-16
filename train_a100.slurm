@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH -C a100-32g
+#SBATCH -C a100-80g
 #SBATCH --output=logs/default_job.out
 #SBATCH --error=logs/default_job.err
 
