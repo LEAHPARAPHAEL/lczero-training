@@ -432,16 +432,8 @@ class Net:
                 if layers[2].split(':')[0] == 'gate':
                     pb_name = 'ip_{}'.format(layers[1])
 
-        elif base_layer == 'final_reshape':
-            if layers[1].startswith("dense") :
-                if layers[2].split(':')[0] == 'kernel':
-                    pb_name = 'cnn_enc_dense_w'
-                elif layers[2].split(':')[0] == 'bias':
-                    pb_name = 'cnn_enc_dense_b'
-            elif layers[1].startswith("ln") :
-                pb_name = 'cnn_enc_' + encoder_to_bp('ln', weights_name)
-            elif layers[1].startswith("ma_gating") :
-                pb_name = 'cnn_enc_' + layers[2]
+        elif base_layer in ['final_reshape', 'final_ln'] :
+            pb_name = 'final_' + encoder_to_bp('ln', weights_name)
 
         elif base_layer.startswith('block'):
             target_list = 'tower'

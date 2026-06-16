@@ -230,6 +230,7 @@ message Weights {
     optional PolicyHead opponent = 6;
     // map<string, PolicyHead> policy_head_map = 7;
     repeated PolicyHeadMap policy_head_map = 7;
+    optional PolicyHead next = 8;
   }
 
   message ValueHeadMap {
@@ -251,16 +252,12 @@ message Weights {
   // Residual tower.
   repeated TowerBlock tower = 2;
 
-  optional Layer cnn_enc_w = 46;
-  optional Layer cnn_enc_b = 47;
-  optional Layer cnn_enc_ln_betas = 48;
-  optional Layer cnn_enc_ln_gammas = 49;
-  optional Layer cnn_enc_mult_gate = 50;
-  optional Layer cnn_enc_add_gate = 51;
-  repeated Residual residual = 52;
-  optional Layer input_ln_betas = 53;
-  optional Layer input_ln_gammas = 54;
-  optional float epsilon = 55;
+  optional Layer final_ln_betas = 46;
+  optional Layer final_ln_gammas = 47;
+  repeated Residual residual = 48;
+  optional Layer input_ln_betas = 49;
+  optional Layer input_ln_gammas = 50;
+  optional float epsilon = 51;
 
   // Embedding layer for attention body encoders
   // (NETWORK_ATTENTIONBODY_WITH_HEADFORMAT).

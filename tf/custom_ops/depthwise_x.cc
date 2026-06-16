@@ -9,6 +9,9 @@ namespace tensorflow {
 
 using GPUDevice = Eigen::GpuDevice;
 
+// ============================================================================
+// OP METADATA REGISTRATION
+// ============================================================================
 REGISTER_OP("DepthwiseX")
     .Input("input: half")
     .Input("weights: half")
@@ -40,6 +43,9 @@ REGISTER_OP("DepthwiseXGrad")
         return tensorflow::OkStatus();
     });
 
+// ============================================================================
+// FORWARD PASS CPU COMPUTE WRAPPER
+// ============================================================================
 class DepthwiseXOp : public OpKernel {
 public:
     explicit DepthwiseXOp(OpKernelConstruction* context) : OpKernel(context) {
@@ -62,11 +68,11 @@ public:
 
         functor::DepthwiseXFunctor<GPUDevice, Eigen::half>()(
             device, batch_size, total_c_half2,
-            output_tensor->flat<Eigen::half>().data(),
-            input_tensor->flat<Eigen::half>().data(),
-            weights_tensor->flat<Eigen::half>().data(),
-            recomb_tensor->flat<Eigen::half>().data(),
-            biases_tensor->flat<Eigen::half>().data(),
+            output_tensor->flat<Eigen::half>().data(), // Pointer -> OK
+            input_tensor.flat<Eigen::half>().data(),   // Reference . FIXED
+            weights_tensor.flat<Eigen::half>().data(), // Reference . FIXED
+            recomb_tensor.flat<Eigen::half>().data(),  // Reference . FIXED
+            biases_tensor.flat<Eigen::half>().data(),  // Reference . FIXED
             activation_mode_
         );
     }
@@ -74,6 +80,9 @@ private:
     int activation_mode_;
 };
 
+// ============================================================================
+// BACKWARD PASS CPU COMPUTE WRAPPER
+// ============================================================================
 class DepthwiseXGradOp : public OpKernel {
 public:
     explicit DepthwiseXGradOp(OpKernelConstruction* context) : OpKernel(context) {
@@ -111,15 +120,15 @@ public:
 
         functor::DepthwiseXGradFunctor<GPUDevice, Eigen::half>()(
             device, batch_size, total_c_half2,
-            d_input_tensor->flat<Eigen::half>().data(),
-            d_weights_tensor->flat<Eigen::half>().data(),
-            d_recomb_tensor->flat<Eigen::half>().data(),
-            d_biases_tensor->flat<Eigen::half>().data(),
-            d_out_tensor.flat<Eigen::half>().data(),
-            input_tensor.flat<Eigen::half>().data(),
-            weights_tensor->flat<Eigen::half>().data(),
-            recomb_tensor->flat<Eigen::half>().data(),
-            biases_tensor->flat<Eigen::half>().data(),
+            d_input_tensor->flat<Eigen::half>().data(),   // Pointer -> OK
+            d_weights_tensor->flat<Eigen::half>().data(), // Pointer -> OK
+            d_recomb_tensor->flat<Eigen::half>().data(),  // Pointer -> OK
+            d_biases_tensor->flat<Eigen::half>().data(),  // Pointer -> OK
+            d_out_tensor.flat<Eigen::half>().data(),       // Reference . FIXED
+            input_tensor.flat<Eigen::half>().data(),       // Reference . FIXED
+            weights_tensor.flat<Eigen::half>().data(),     // Reference . FIXED
+            recomb_tensor.flat<Eigen::half>().data(),      // Reference . FIXED
+            biases_tensor.flat<Eigen::half>().data(),      // Reference . FIXED
             activation_mode_
         );
     }

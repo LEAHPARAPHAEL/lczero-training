@@ -624,30 +624,7 @@ class FusedChessDepthwiseLayer(tf.keras.layers.Layer):
 
 
 
-
-_depthwise_x_module = tf.load_op_library(os.path.join(loc, 'depthwise_x.so'))
-
-depthwise_x = _depthwise_x_module.depthwise_x
-depthwise_x_grad = _depthwise_x_module.depthwise_x_grad
-
-
-@ops.RegisterGradient("DepthwiseX")
-def _depthwise_x_grad(op, d_out):
-    activation_mode = op.get_attr("activation_mode")
-    
-    input_tensor = op.inputs[0]
-    weights_tensor = op.inputs[1]
-    recomb_tensor = op.inputs[2]
-    biases_tensor = op.inputs[3]
-    
-    d_in, d_w, d_r, d_b = depthwise_x_grad(
-        d_out, input_tensor, weights_tensor, recomb_tensor, biases_tensor,
-        activation_mode=activation_mode
-    )
-    return d_in, d_w, d_r, d_b
-
-
-_depthwise_x_module = tf.load_op_library(os.path.join(loc, 'depthwise_x.so'))
+_depthwise_x_module = tf.load_op_library('./custom_ops/depthwise_x.so')
 
 depthwise_x = _depthwise_x_module.depthwise_x
 depthwise_x_grad = _depthwise_x_module.depthwise_x_grad
@@ -675,6 +652,7 @@ class DepthwiseXLayer(tf.keras.layers.Layer):
         self.activation_mode = 1 if activation.lower() == "mish" else 0
 
     def build(self, input_shape):
+        self.channels = input_shape[-1]
         # 27 spatial weights per channel (9 Rook + 9 Bishop + 9 Knight)
         self.depthwise_kernel = self.add_weight(
             shape=(27, self.channels),

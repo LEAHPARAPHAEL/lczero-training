@@ -1989,7 +1989,7 @@ class TFProcess:
             #tf.saved_model.save(self.model, leela_path)
             
             # Save playable Leela .pb format
-            if not self.cfg["training"].get("disable_pb_checkpointing") and steps == self.cfg["training"]["total_steps"]:
+            if not self.cfg["training"].get("disable_pb_checkpointing") and steps % 50000 == 0:
                 self.save_leelaz_weights(leela_path)
 
             # === 2. SWA WEIGHTS SAVING (Protected!) ===
@@ -2309,6 +2309,8 @@ class TFProcess:
                         mask = layer.get_mask()
                         if mask is not None:
                             kernel = kernel * mask
+                    else:
+                        print(kernel[:, 0])
                     numpy_weights.append([weight.name, kernel])
                     masks.append(mask_descriptor)
                 else:
@@ -2791,7 +2793,7 @@ class TFProcess:
 
 
 
-    def x_block(self, x, channels: int, dff: int, kernel_size: int, name: str, mask=None):
+    def x_block(self, x, channels: int, dff: int, name: str):
         activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
 
         flow = tf.keras.layers.Dense(dff,
@@ -3152,7 +3154,7 @@ class TFProcess:
             
         elif block_type == 'X':
             _, _, dff = self._get_depthwise_params()
-            flow, block_acts = self.x_block(flow, block_dims, dff, self.initializer, name=name + "_multiplier")
+            flow = self.x_block(flow, channels=block_dims, dff=dff, name=name + "_multiplier")
             
         elif block_type in ['T', 'D', 'B']:
             mask, kernel_size = None, 0
@@ -3199,14 +3201,7 @@ class TFProcess:
                 attn_wts.append(block_attn)
             activations.update(block_acts)
 
-        if self._is_spatial(self.blocks[-1]):
-            flow = self.cnn_to_encoder(
-                flow, current_channels=self.blocks_dims[-1], 
-                target_d_model=self.encoder_d_model, 
-                name=name+"final_reshape"
-            )
-
-        elif self.prenorm:
+        if self._is_spatial(self.blocks[-1]) or self.prenorm:
             flow = self.encoder_norm(name=name+"final_reshape/ln", epsilon=self.encoder_norm_epsilon)(flow)
 
         flow_ = flow

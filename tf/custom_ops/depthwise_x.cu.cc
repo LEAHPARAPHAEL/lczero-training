@@ -45,9 +45,7 @@ __global__ void DepthwiseXKernelNHWC(int total_c_half2, half2* output, const hal
     int h = blockIdx.z;
     int n = blockIdx.x;
 
-    int abs_h = h - 2;
-    int abs_w = w - 2;
-
+    // Centered relative spatial stencil offsets (-2 to +2 grid layout)
     const int dh_r[9] = {-2, -1,  0,  0, 0, 0, 0, 1, 2}; const int dw_r[9] = { 0,  0, -2, -1, 0, 1, 2, 0, 0};
     const int dh_b[9] = {-2, -2, -1, -1, 0, 1, 1, 2, 2}; const int dw_b[9] = {-2,  2, -1,  1, 0, -1, 1, -2, 2};
     const int dh_k[9] = {-2, -2, -1, -1, 0, 1, 1, 2, 2}; const int dw_k[9] = {-1,  1, -2,  2, 0, -2, 2, -1, 1};
@@ -60,7 +58,7 @@ __global__ void DepthwiseXKernelNHWC(int total_c_half2, half2* output, const hal
         w_knig[i] = weights[(18 + i) * total_c_half2 + c];
     }
     
-    // Read the 6 distinct space-conditional interaction weights uniquely for square (h, w)
+    // Space-conditional coordinate-absolute prior indexing
     int recomb_base = (h * 8 * 6 * total_c_half2) + (w * 6 * total_c_half2) + c;
     half2 param_r  = recomb[recomb_base + 0 * total_c_half2];
     half2 param_b  = recomb[recomb_base + 1 * total_c_half2];
@@ -76,9 +74,10 @@ __global__ void DepthwiseXKernelNHWC(int total_c_half2, half2* output, const hal
 
     #pragma unroll
     for (int i = 0; i < 9; ++i) {
-        r_sum = __hfma2(w_rook[i], get_input_half2_nhwc_safe(input, n, abs_h + dh_r[i], abs_w + dw_r[i], c, total_c_half2), r_sum);
-        b_sum = __hfma2(w_bish[i], get_input_half2_nhwc_safe(input, n, abs_h + dh_b[i], abs_w + dw_b[i], c, total_c_half2), b_sum);
-        k_sum = __hfma2(w_knig[i], get_input_half2_nhwc_safe(input, n, abs_h + dh_k[i], abs_w + dw_k[i], c, total_c_half2), k_sum);
+        // FIX: Add offsets directly to absolute thread square coordinates (h, w)
+        r_sum = __hfma2(w_rook[i], get_input_half2_nhwc_safe(input, n, h + dh_r[i], w + dw_r[i], c, total_c_half2), r_sum);
+        b_sum = __hfma2(w_bish[i], get_input_half2_nhwc_safe(input, n, h + dh_b[i], w + dw_b[i], c, total_c_half2), b_sum);
+        k_sum = __hfma2(w_knig[i], get_input_half2_nhwc_safe(input, n, h + dh_k[i], w + dw_k[i], c, total_c_half2), k_sum);
     }
 
     half2 R = r_sum; half2 B = b_sum; half2 K = k_sum;
@@ -89,12 +88,10 @@ __global__ void DepthwiseXKernelNHWC(int total_c_half2, half2* output, const hal
         float2 k_f = __half22float2(k_sum); k_f.x = mishActivate(k_f.x); k_f.y = mishActivate(k_f.y); K = __float22half2_rn(k_f);
     }
 
-    // Compute Bilinear Interaction Products directly inside thread registers
     half2 RB = __hmul2(R, B);
     half2 RK = __hmul2(R, K);
     half2 BK = __hmul2(B, K);
 
-    // Apply Factorization Machine-inspired full interaction blend
     half2 blended = bias + __hmul2(param_r, R) + __hmul2(param_b, B) + __hmul2(param_k, K)
                          + __hmul2(param_rb, RB) + __hmul2(param_rk, RK) + __hmul2(param_bk, BK);
 
@@ -115,9 +112,6 @@ __global__ void DepthwiseXGradKernelNHWC(int total_c_half2, half2* d_input, half
     int w = threadIdx.y;
     int h = blockIdx.z;
     int n = blockIdx.x;
-
-    int abs_h = h - 2;
-    int abs_w = w - 2;
 
     const int dh_r[9] = {-2, -1,  0,  0, 0, 0, 0, 1, 2}; const int dw_r[9] = { 0,  0, -2, -1, 0, 1, 2, 0, 0};
     const int dh_b[9] = {-2, -2, -1, -1, 0, 1, 1, 2, 2}; const int dw_b[9] = {-2,  2, -1,  1, 0, -1, 1, -2, 2};
@@ -146,9 +140,10 @@ __global__ void DepthwiseXGradKernelNHWC(int total_c_half2, half2* d_input, half
 
     #pragma unroll
     for (int i = 0; i < 9; ++i) {
-        x_r[i] = get_input_half2_nhwc_safe(input, n, abs_h + dh_r[i], abs_w + dw_r[i], c, total_c_half2);
-        x_b[i] = get_input_half2_nhwc_safe(input, n, abs_h + dh_b[i], abs_w + dw_b[i], c, total_c_half2);
-        x_k[i] = get_input_half2_nhwc_safe(input, n, abs_h + dh_k[i], abs_w + dw_k[i], c, total_c_half2);
+        // FIX: Add offsets directly to absolute thread square coordinates (h, w)
+        x_r[i] = get_input_half2_nhwc_safe(input, n, h + dh_r[i], w + dw_r[i], c, total_c_half2);
+        x_b[i] = get_input_half2_nhwc_safe(input, n, h + dh_b[i], w + dw_b[i], c, total_c_half2);
+        x_k[i] = get_input_half2_nhwc_safe(input, n, h + dh_k[i], w + dw_k[i], c, total_c_half2);
 
         r_sum = __hfma2(w_rook[i], x_r[i], r_sum);
         b_sum = __hfma2(w_bish[i], x_b[i], b_sum);
@@ -167,7 +162,7 @@ __global__ void DepthwiseXGradKernelNHWC(int total_c_half2, half2* d_input, half
     int flat_idx = (n * 64 * total_c_half2) + (h * 8 * total_c_half2) + (w * total_c_half2) + c;
     half2 d_blended = d_out[flat_idx];
 
-    // Gradients for absolute space parameters
+    // Gradients for coordinate-absolute blending priors
     atomicAdd(&(d_biases[c]), d_blended);
     atomicAdd(&(d_recomb[recomb_base + 0 * total_c_half2]), __hmul2(d_blended, R));
     atomicAdd(&(d_recomb[recomb_base + 1 * total_c_half2]), __hmul2(d_blended, B));
@@ -176,10 +171,10 @@ __global__ void DepthwiseXGradKernelNHWC(int total_c_half2, half2* d_input, half
     atomicAdd(&(d_recomb[recomb_base + 4 * total_c_half2]), __hmul2(d_blended, RK));
     atomicAdd(&(d_recomb[recomb_base + 5 * total_c_half2]), __hmul2(d_blended, BK));
 
-    // Multi-variate derivative expansion for post-activation states
-    half2 d_R = __hfma2(d_blended, param_r, __hfma2(d_blended, __hmul2(param_rb, B), __hmul2(d_blended, __hmul2(param_rk, K))));
-    half2 d_B = __hfma2(d_blended, param_b, __hfma2(d_blended, __hmul2(param_rb, R), __hmul2(d_blended, __hmul2(param_bk, K))));
-    half2 d_K = __hfma2(d_blended, param_k, __hfma2(d_blended, __hmul2(param_rk, R), __hmul2(d_blended, __hmul2(param_bk, B))));
+    // FIX: Highly optimized 3-instruction factored pipeline for multivariate backprop signals
+    half2 d_R = __hmul2(d_blended, __hadd2(param_r, __hfma2(param_rb, B, __hmul2(param_rk, K))));
+    half2 d_B = __hmul2(d_blended, __hadd2(param_b, __hfma2(param_rb, R, __hmul2(param_bk, K))));
+    half2 d_K = __hmul2(d_blended, __hadd2(param_k, __hfma2(param_rk, R, __hmul2(param_bk, B))));
 
     half2 d_r_sum = d_R; half2 d_b_sum = d_B; half2 d_k_sum = d_K;
 
@@ -195,16 +190,22 @@ __global__ void DepthwiseXGradKernelNHWC(int total_c_half2, half2* d_input, half
         atomicAdd(&(d_weights[(9 + i) * total_c_half2 + c]), __hmul2(d_b_sum, x_b[i]));
         atomicAdd(&(d_weights[(18 + i) * total_c_half2 + c]), __hmul2(d_k_sum, x_k[i]));
 
-        if (abs_h + dh_r[i] >= 0 && abs_h + dh_r[i] < 8 && abs_w + dw_r[i] >= 0 && abs_w + dw_r[i] < 8) {
-            int in_idx_r = (n * 64 * total_c_half2) + ((abs_h + dh_r[i]) * 8 * total_c_half2) + ((abs_w + dw_r[i]) * total_c_half2) + c;
+        // FIX: Bounds-check and index map with identical absolute thread positions
+        int h_r = h + dh_r[i]; int w_r = w + dw_r[i];
+        if (h_r >= 0 && h_r < 8 && w_r >= 0 && w_r < 8) {
+            int in_idx_r = (n * 64 * total_c_half2) + (h_r * 8 * total_c_half2) + (w_r * total_c_half2) + c;
             atomicAdd(&(d_input[in_idx_r]), __hmul2(d_r_sum, w_rook[i]));
         }
-        if (abs_h + dh_b[i] >= 0 && abs_h + dh_b[i] < 8 && abs_w + dw_b[i] >= 0 && abs_w + dw_b[i] < 8) {
-            int in_idx_b = (n * 64 * total_c_half2) + ((abs_h + dh_b[i]) * 8 * total_c_half2) + ((abs_w + dw_b[i]) * total_c_half2) + c;
+        
+        int h_b = h + dh_b[i]; int w_b = w + dw_b[i];
+        if (h_b >= 0 && h_b < 8 && w_b >= 0 && w_b < 8) {
+            int in_idx_b = (n * 64 * total_c_half2) + (h_b * 8 * total_c_half2) + (w_b * total_c_half2) + c;
             atomicAdd(&(d_input[in_idx_b]), __hmul2(d_b_sum, w_bish[i]));
         }
-        if (abs_h + dh_k[i] >= 0 && abs_h + dh_k[i] < 8 && abs_w + dw_k[i] >= 0 && abs_w + dw_k[i] < 8) {
-            int in_idx_k = (n * 64 * total_c_half2) + ((abs_h + dh_k[i]) * 8 * total_c_half2) + ((abs_w + dw_k[i]) * total_c_half2) + c;
+        
+        int h_k = h + dh_k[i]; int w_k = w + dw_k[i];
+        if (h_k >= 0 && h_k < 8 && w_k >= 0 && w_k < 8) {
+            int in_idx_k = (n * 64 * total_c_half2) + (h_k * 8 * total_c_half2) + (w_k * total_c_half2) + c;
             atomicAdd(&(d_input[in_idx_k]), __hmul2(d_k_sum, w_knig[i]));
         }
     }
@@ -236,7 +237,7 @@ struct DepthwiseXGradFunctor<GPUDevice, T> {
     dim3 grid(batch_size, (total_c_half2 + 31) / 32, 8);
     dim3 block(32, 8, 1);
 
-    DepthwiseXGradKernelNHWC<<<grid, block, 0, d.stream()>>>(
+    DepthwiseXGradKernelNHWC<<<grid, block, 0, d.stream()>>>(\
         total_c_half2, reinterpret_cast<half2*>(d_input), reinterpret_cast<half2*>(d_weights), 
         reinterpret_cast<half2*>(d_recomb), reinterpret_cast<half2*>(d_biases),
         reinterpret_cast<const half2*>(d_out), reinterpret_cast<const half2*>(input), 

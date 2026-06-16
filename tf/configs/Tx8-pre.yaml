@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "MMTMMTMMT-cuda"
+name: "Tx8-pre"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -34,7 +34,7 @@ training:
     checkpoint_activations: false
     num_test_positions: 50_000
     train_avg_report_steps: 2_000
-    total_steps: 151_000
+    total_steps: 150_000
     checkpoint_steps: 10_000
     shuffle_size: 100_000
     warmup_steps: 1_000
@@ -131,11 +131,9 @@ model:
     rep_quant: false
     prenorm: true
 
-    blocks: ['M', 'M', 'T', 'M', 'M', 'T', 'M', 'M', 'T']
-    cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
-    depthwise_masks: [[192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192]]
-    cnn_dffs: [576, 576, 576, 576, 576, 576]
-    se_ratio: 2
+    blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
+    #cnn_blocks_dims: [96, 96]
+    
     #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
     #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
     #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
