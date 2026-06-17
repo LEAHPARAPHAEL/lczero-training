@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "BT4-8x256x8h-crbk"
+name: "MMTMMTMMT-post"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -11,41 +11,35 @@ dataset:
     - '/home/raph/leela/data/train/training*/'
   input_test:
     - '/home/raph/leela/data/test/training*/'
-  # input_validation:
-  # #  - '/mnt/data/validation-rescored/'
   train_workers: 4
   test_workers: 2
   fast_chunk_loading: false
-  # pc_min: 0
-  # pc_max: 6
 training:
-    precision: half 
+    precision: half
     swa: false
-    swa_output: false  
+    swa_output: false
     swa_max_n: 10
     swa_steps: 100
-    max_grad_norm: 5.0
+    max_grad_norm: 3.0
     batch_size: 256
     num_batch_splits: 1
-    value_focus_min: 1.0
-    value_focus_slope: 0.0
+    #diff_focus_min: 0.025
+    #diff_focus_slope: 3.0
     lookahead_optimizer: false
-    renorm: false
+    renorm: true
     renorm_max_r: 1.0
     renorm_max_d: 0.0
-    test_steps: 2_000
+    test_steps: 2000
     disable_pb_checkpointing: false
     checkpoint_activations: false
-
-    # validation_steps: 5000
     num_test_positions: 50_000
     train_avg_report_steps: 2_000
-    total_steps: 200_000
+    total_steps: 151_000
     checkpoint_steps: 10_000
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true
-    lr_values: 
+    lr_values: # schedule is likely outdated
         - 0.0005
         - 0.0005
     lr_boundaries:
@@ -54,7 +48,7 @@ training:
         policy: 1.0
         policy_optimistic_st: 1.0
         policy_soft: 8.0 # loss is much smaller at optimum
-        policy_opponent: 1.0
+        policy_opponent: 0.0
         policy_next: 0.0
         value_winner: 1.0
         value_q: 1.0
@@ -65,6 +59,7 @@ training:
         value_st_cat: 0.1
         moves_left: 1.0
         reg: 1.0
+
     path: '/home/raph/leela/networks/'
     logs_path : '/home/raph/leela/logs/'
 
@@ -77,39 +72,36 @@ training:
     return_attn_wts: false
     return_activations: false
 
-model:
-
-    # Dimension parameters
+model:              
     embedding_size: 256
     policy_embedding_size: 256
     value_embedding_size: 32
     moves_left_embedding_size: 32
-    encoder_layers: 8                  # number of intermediate attention layers in the policy head
-    encoder_heads: 8                # number of attention heads in encoder layers, emb // (32 or 64) recommended
+    encoder_layers: 8                   # number of intermediate attention layers in the policy head
+    encoder_heads: 8                    # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
     encoder_d_model: 256                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
-    encoder_dff: 256                    # size of the expansion layer in encoder layer ffn
+    encoder_dff: 384                    # size of the expansion layer in encoder layer ffn
     policy_d_model: 256                  # size of the query and key vectors in final attention layer
     policy_d_opt: 256
     policy_d_soft: 256
-    policy_d_opponent: 256
-    policy_d_next: 256                    # size of the query and key vectors for auxiliary layers
+    policy_d_opponent: 0
+    policy_d_next: 0
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 
-    embedding_style: "new"
-    embedding_dense_sz: 32
+    embedding_dense_sz: 64           # number of params added is 50k times this number so care is needed
 
-    value: 'wdl'
-    moves_left: 'v1'
-    input_type: 'classic'
+    value: "wdl"
+    moves_left: "v1"
+    input_type: "classic"
 
-    # Smolgen
+    # smolgen: more efficient version of fullgen, adds a lot of params
     use_smolgen: true
     smolgen_hidden_channels: 8
     smolgen_hidden_sz: 64
     smolgen_gen_sz: 64
-    smolgen_activation: 'swish'
+    smolgen_activation: "swish"
 
     # RPE
     use_rpe_q: false
@@ -119,13 +111,10 @@ model:
     # Gating
     use_logit_gating: false
 
-    # Ablations
-    omit_qkv_biases: true # these two increases training speed by ~10% on BT4 
-    encoder_rms_norm: false # without quality degradation
-
-    # Output heads
+    omit_qkv_biases: true 
+    encoder_rms_norm: false
     policy_optimistic_st: true
-    policy_opponent: true
+    policy_opponent: false
     policy_next: false
     value_st: true
     value_q: true
@@ -140,17 +129,15 @@ model:
     quantize_weight_bits: 8
     quantize_channels: false
     rep_quant: false
+    prenorm: false
 
-    attention_masks:
-      - piece: "color"
-        heads: [0]
-        layers: 'all'
-      - piece: "rook"
-        heads: [1]
-        layers: 'all'
-      - piece: "bishop"
-        heads: [2]
-        layers: 'all' 
-      - piece: "knight"
-        heads: [3]
-        layers: 'all' 
+    blocks: ['M', 'M', 'T', 'M', 'M', 'T', 'M', 'M', 'T']
+    cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
+    depthwise_masks: [[192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192]]
+    cnn_dffs: [576, 576, 576, 576, 576, 576]
+    se_ratio: 2
+    #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
+    #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
+    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    #cnn_dffs: [576, 576]
+    #se_ratio: 2
