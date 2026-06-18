@@ -13,7 +13,7 @@
 # --- SÉCURITÉ : Vérification de l'argument ---
 if [ -z "$1" ]; then
     echo "Erreur : Aucun fichier de configuration n'a été fourni."
-    echo "Utilisation : sbatch save.slurm <fichier_config.yaml>"
+    echo "Utilisation : sbatch model_to_net.slurm <fichier_config.yaml>"
     exit 1
 fi
 
@@ -37,6 +37,6 @@ echo "Saving .pb.gz for model : $CONFIG_NAME"
 protoc -I=. --python_out=. proto/net.proto
 
 # Lancement avec redirection dynamique des logs
-python save_proto.py --cfg $CONFIG_FILE > ../logs/$CONFIG_NAME/save.out 2> ../logs/$CONFIG_NAME/save.err
+python model_to_net.py --cfg $CONFIG_FILE > ../logs/$CONFIG_NAME/save.out 2> ../logs/$CONFIG_NAME/save.err
 
 echo "Finished saving .pb.gz for model : $CONFIG_NAME !"

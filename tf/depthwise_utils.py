@@ -697,3 +697,6 @@ class DepthwiseXLayer(tf.keras.layers.Layer):
             "activation": self.activation_str
         })
         return config
+
+    def get_mask_descriptor(self):
+        return None
