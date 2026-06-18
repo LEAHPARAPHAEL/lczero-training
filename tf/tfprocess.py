@@ -3019,7 +3019,7 @@ class TFProcess:
         
         if not self.prenorm and self.use_cnn_enc_ln:
             flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-            flow = ma_gating(flow, name=name+'/ma_gating')
+            #flow = ma_gating(flow, name=name+'/ma_gating')
             
         return flow
 
@@ -3029,7 +3029,7 @@ class TFProcess:
                                     name=name + "/dense")(flow)
         
         flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-        flow = ma_gating(flow, name=name+'/ma_gating')
+        #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_cnn(self, flow, target_channels, name):
