@@ -292,7 +292,7 @@ def main(cmd):
     tfprocess.restore()
     print("Done")
 
-    leela_path = "/home/raph/leela/networks/test"
+    leela_path = "/home/raph/leela/networks/test/test"
     tfprocess.save_leelaz_weights(leela_path)
     train_parser.shutdown()
     test_parser.shutdown()
