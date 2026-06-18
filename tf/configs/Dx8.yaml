@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-DW"
+name: "Dx8"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -33,9 +33,9 @@ training:
     disable_pb_checkpointing: false
     checkpoint_activations: false
     num_test_positions: 50_000
-    train_avg_report_steps: 2_000
+    train_avg_report_steps: 1_000
     total_steps: 150_000
-    checkpoint_steps: 2_000
+    checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true

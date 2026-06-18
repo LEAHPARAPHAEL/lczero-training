@@ -550,7 +550,6 @@ class TFProcess:
         self.embedding_style = 'new' if self.blocks[0] == 'T' else 'conv'
         self.embedding_ffn = self.cfg['model'].get("embedding_ffn", "T")
         self.depthwise_masks = self.cfg['model'].get("depthwise_masks")
-        self.depthwise_ffn = self.cfg["model"].get("depthwise_ffn")
         self.depthwise_kernels = self.cfg["model"].get("depthwise_kernels", [5 for _ in range(len(self.blocks) + 1)])
         self.use_cnn_enc_dense = self.cfg["model"].get("use_cnn_enc_dense", False)
         self.use_cnn_enc_ln = self.cfg["model"].get("use_cnn_enc_ln", False)
@@ -2531,6 +2530,7 @@ class TFProcess:
 
             dense1 = dense1 * dense3
 
+        '''
         dense1 = du.FusedChessDepthwiseLayer(
             dff, 
             mask[0], 
@@ -2540,6 +2540,21 @@ class TFProcess:
             name = name + "/d_conv",
             initializer = self.initializer
         )(dense1)
+
+        dense1 = self.batch_norm(dense1, name = name + "/d_conv/bn", scale = False, axis = -1)
+        '''
+        dense1 = du.FusedChessDepthwiseLayer(
+            dff, 
+            mask[0], 
+            mask[1], 
+            mask[2],
+            activation = None,
+            name = name + "/d_conv",
+            initializer = self.initializer
+        )(dense1)
+
+        dense1 = self.batch_norm(dense1, name = name + "/d_conv/bn", scale = False, axis = -1)
+        dense1 = activation(dense1)
 
         out_quantize = Quantize(name=name+"/quantize_2", n_bits=self.quantize_activation_bits, quantize_channels=False) if self.quantize_activations else None
         if out_quantize is not None:
