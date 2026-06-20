@@ -130,8 +130,16 @@ model:
     quantize_channels: false
     rep_quant: false
 
+    use_cnn_enc_ln: true
+
     blocks: ['C', 'C', 'C', 'C', 'C', 'C', 'T', 'T', 'T', 'T', 'T', 'T']
     cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
-    depthwise_masks: [[96, 96, 64], [96, 96, 64]]
+    depthwise_masks: [[96, 96, 64], [96, 96, 64], [96, 96, 64], [96, 96, 64], [96, 96, 64], [96, 96, 64]]
     cnn_dffs: [384, 384, 384, 384, 384, 384]
     se_ratio: 2
+    
+    #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
+    #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
+    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    #cnn_dffs: [576, 576]
+    #se_ratio: 2
