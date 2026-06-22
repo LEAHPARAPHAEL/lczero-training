@@ -240,8 +240,8 @@ if __name__ == "__main__":
     URL = "https://data.lczero.org/files/training_data/test91/"
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
-    TARGET_GAMES = 10000000
-    MAX_DISK_SPACE_GB = 400  
+    TARGET_GAMES = 100000000
+    MAX_DISK_SPACE_GB = 4000  
     TRAIN_RATIO = 0.95  # 95% to train, 5% to test
     
     # --- I/O TUNING ---
