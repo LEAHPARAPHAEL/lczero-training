@@ -590,185 +590,6 @@ def apply_alpha(qs, alpha, alt_signs=True):
 
     return q_st
 
-
-def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
-    v6_struct = struct.Struct(V6_STRUCT_STRING)
-    v7_struct = struct.Struct(V7_STRUCT_STRING)
-
-    record_size = v6_struct.size
-    # C:/leeladata/train/training-run2-test77-20211214-1618/*.gz
-    # apply ema with alpha
-    cd_array = bytearray()
-
-    try:
-        with gzip.open(filename, "rb") as chunk_file:
-            chunk_file.seek(0)
-            chunkdata = chunk_file.read()
-            if len(chunkdata) == 0:
-                return
-            version = chunkdata[0:4]
-            if version != V6_VERSION:
-                return
-
-            n_chunks = len(chunkdata) // record_size
-
-            # Gather q bytes
-            qs = []
-            ds = []
-            play_idx = []
-            for i in range(n_chunks):
-                qs.append(struct.unpack(
-                    "f", chunkdata[i*record_size+8280:i*record_size+8284])[0])
-                ds.append(struct.unpack(
-                    "f", chunkdata[i*record_size+8288:i*record_size+8292])[0])
-                play_idx.append(
-                    chunkdata[i*record_size+8344:i*record_size+8346])
-            # put max value if game has ended
-            play_idx += [struct.pack("H", 65535)] * 2
-
-            st_q = apply_alpha(qs, st_alpha)
-            st_d = apply_alpha(ds, st_alpha, alt_signs=False)
-            cd_array = b""
-            for i in range(n_chunks):
-                new_chunk = bytearray(
-                    chunkdata[i*record_size:(i+1)*record_size] + b"\x00" * (v7_struct.size - record_size))
-                if abs(st_q[i]) > 1 + 1e-6:
-                    print(f"Got {st_q[i]}")
-                # root q
-                new_chunk[8352:8356] = struct.pack("f", st_q[i])
-                # root d
-                new_chunk[8356:8360] = struct.pack("f", max(st_d[i], 0))
-                new_chunk[0:4] = V7_VERSION
-                new_chunk[8360:8362] = play_idx[i+1]
-                new_chunk[8362:8364] = play_idx[i+2]
-                assert len(new_chunk) == v7_struct.size
-                cd_array += new_chunk
-
-    except Exception as e:
-        print(f"Could not read {filename}, got {e}")
-    if cd_array == bytearray():
-        return
-        
-    # 1. Define a temporary filename
-    tmp_filename = filename + ".tmp"
-    
-    # 2. Write all the data to the temporary file safely
-    with gzip.open(tmp_filename, 'wb') as chunk_file:
-        chunk_file.write(bytes(cd_array))
-        
-    # 3. Atomically overwrite the original file
-    os.replace(tmp_filename, filename)
-
-
-def check_v7_file(filename):
-    v7_struct = struct.Struct(V7_STRUCT_STRING)
-    record_size = v7_struct.size
-    with gzip.open(filename, "rb") as chunk_file:
-        chunk_file.seek(0)
-        chunkdata = chunk_file.read()
-        if len(chunkdata) == 0:
-            return
-        version = chunkdata[0:4]
-        assert version == V7_VERSION
-        assert len(chunkdata) % v7_struct.size == 0
-        n_chunks = len(chunkdata) // v7_struct.size
-
-        for i in range(n_chunks):
-            chunk = chunkdata[i*record_size:(i+1)*record_size]
-            st_q = struct.unpack("f", chunk[8352:8356])[0]
-            # root d
-            st_d = struct.unpack("f", chunk[8356:8360])[0]
-
-            opp_play = struct.unpack("H", chunk[8360:8362])[0]
-            my_next_play = struct.unpack("H", chunk[8362:8364])[0]
-
-            print(
-                f"st_q: {st_q}, st_d: {st_d}, opp_play: {opp_play}, my_next_play: {my_next_play}")
-
-
-def rescore_files(filenames, progress, task_id, **kwargs):
-    i = 0
-    for filename in filenames:
-        rescore_file(filename, **kwargs)
-        i += 1
-        progress[task_id] = {"progress": i + 1, "total": len(filenames)}
-
-
-def rescore_files_normal(filenames, **kwargs):
-    n_chunks = 0
-    i = 0
-    for filename in filenames:
-        rescore_file(filename, **kwargs)
-        i += 1
-        print(f"Processed {i} of {len(filenames)} chunks")
-
-
-def rescore(filenames, n_workers=16, n_jobs=1000, **kwargs):
-    from concurrent.futures import ProcessPoolExecutor
-    from rich import progress
-    import multiprocessing
-
-    if isinstance(filenames, str):
-        if not filenames.endswith(".gz"):
-            filenames = filenames + "/*.gz"
-        import glob
-        filenames = glob.glob(filenames)
-
-    print(
-        f"Rescoring {len(filenames)} files with {n_workers} workers and {n_jobs} jobs each")
-
-    with progress.Progress(
-        "[progress.description]{task.description}",
-        progress.BarColumn(),
-        "[progress.percentage]{task.percentage:>3.1f}%",
-        progress.TimeRemainingColumn(),
-        progress.TimeElapsedColumn(),
-        refresh_per_second=1,  # bit slower updates
-    ) as progress:
-        futures = []  # keep track of the jobs
-        with multiprocessing.Manager() as manager:
-            # this is the key - we share some state between our
-            # main process and our worker functions
-            _progress = manager.dict()
-            overall_progress_task = progress.add_task(
-                "[green]All jobs progress:")
-
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                for n in range(0, n_jobs):  # iterate over the jobs we need to run
-                    # set visible false so we don't have a lot of bars all at once:
-                    task_id = progress.add_task(f"task {n}", visible=False)
-                    lo = n * len(filenames) // n_jobs
-                    hi = min((n + 1) * len(filenames) //
-                             n_jobs, len(filenames))
-                    futures.append(executor.submit(
-                        rescore_files, filenames[lo:hi], progress=_progress, task_id=task_id, **kwargs))
-
-                # monitor the progress:
-                while (n_finished := sum([future.done() for future in futures])) < len(
-                    futures
-                ):
-                    progress.update(
-                        overall_progress_task, completed=n_finished, total=len(
-                            futures)
-                    )
-                    for task_id, update_data in _progress.items():
-                        latest = update_data["progress"]
-                        total = update_data["total"]
-                        # update the progress bar for this task:
-                        progress.update(
-                            task_id,
-                            completed=latest,
-                            total=total,
-                            visible=latest < total,
-                        )
-
-                # raise any errors:
-                for future in futures:
-                    future.result()
-
-
-
-
 import glob
 import os
 import struct
@@ -781,73 +602,6 @@ logger = logging.getLogger(__name__)
 # If you haven't configured the root logger elsewhere in your main script, 
 # you can uncomment the basicConfig below:
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
-    v6_struct = struct.Struct(V6_STRUCT_STRING)
-    v7_struct = struct.Struct(V7_STRUCT_STRING)
-
-    record_size = v6_struct.size
-    cd_array = bytearray()
-
-    try:
-        with gzip.open(filename, "rb") as chunk_file:
-            chunk_file.seek(0)
-            chunkdata = chunk_file.read()
-            if len(chunkdata) == 0:
-                return
-            version = chunkdata[0:4]
-            if version != V6_VERSION:
-                return
-
-            n_chunks = len(chunkdata) // record_size
-
-            # Gather q bytes
-            qs = []
-            ds = []
-            play_idx = []
-            for i in range(n_chunks):
-                qs.append(struct.unpack(
-                    "f", chunkdata[i*record_size+8280:i*record_size+8284])[0])
-                ds.append(struct.unpack(
-                    "f", chunkdata[i*record_size+8288:i*record_size+8292])[0])
-                play_idx.append(
-                    chunkdata[i*record_size+8344:i*record_size+8346])
-            # put max value if game has ended
-            play_idx += [struct.pack("H", 65535)] * 2
-
-            st_q = apply_alpha(qs, st_alpha)
-            st_d = apply_alpha(ds, st_alpha, alt_signs=False)
-            cd_array = b""
-            for i in range(n_chunks):
-                new_chunk = bytearray(
-                    chunkdata[i*record_size:(i+1)*record_size] + b"\x00" * (v7_struct.size - record_size))
-                if abs(st_q[i]) > 1 + 1e-6:
-                    logger.debug(f"Got {st_q[i]}")
-                # root q
-                new_chunk[8352:8356] = struct.pack("f", st_q[i])
-                # root d
-                new_chunk[8356:8360] = struct.pack("f", max(st_d[i], 0))
-                new_chunk[0:4] = V7_VERSION
-                new_chunk[8360:8362] = play_idx[i+1]
-                new_chunk[8362:8364] = play_idx[i+2]
-                assert len(new_chunk) == v7_struct.size
-                cd_array += new_chunk
-
-    except Exception as e:
-        logger.error(f"Could not read {filename}, got {e}")
-        
-    if cd_array == bytearray():
-        return
-        
-    # 1. Define a temporary filename
-    tmp_filename = filename + ".tmp"
-    
-    # 2. Write all the data to the temporary file safely
-    with gzip.open(tmp_filename, 'wb') as chunk_file:
-        chunk_file.write(bytes(cd_array))
-        
-    # 3. Atomically overwrite the original file
-    os.replace(tmp_filename, filename)
 
 
 def check_v7_file(filename):
@@ -874,24 +628,75 @@ def check_v7_file(filename):
             logger.info(f"st_q: {st_q}, st_d: {st_d}, opp_play: {opp_play}, my_next_play: {my_next_play}")
 
 
+
+def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
+    v6_struct = struct.Struct(V6_STRUCT_STRING)
+    v7_struct = struct.Struct(V7_STRUCT_STRING)
+    record_size = v6_struct.size
+
+    try:
+        # STEP 1: Ultra-fast 4-byte peek (Matches your check_data script)
+        with gzip.open(filename, "rb") as chunk_file:
+            version = chunk_file.read(4)
+            if version == V7_VERSION:
+                return 'already_v7'
+            if version != V6_VERSION:
+                return 'unknown_version'
+            
+            # STEP 2: Only read the rest if it's confirmed V6
+            chunk_file.seek(0)
+            chunkdata = chunk_file.read()
+            
+        if len(chunkdata) == 0:
+            return 'empty'
+
+        n_chunks = len(chunkdata) // record_size
+        qs, ds, play_idx = [], [], []
+        
+        for i in range(n_chunks):
+            qs.append(struct.unpack("f", chunkdata[i*record_size+8280:i*record_size+8284])[0])
+            ds.append(struct.unpack("f", chunkdata[i*record_size+8288:i*record_size+8292])[0])
+            play_idx.append(chunkdata[i*record_size+8344:i*record_size+8346])
+        play_idx += [struct.pack("H", 65535)] * 2
+
+        st_q = apply_alpha(qs, st_alpha)
+        st_d = apply_alpha(ds, st_alpha, alt_signs=False)
+        cd_array = b""
+        
+        for i in range(n_chunks):
+            new_chunk = bytearray(chunkdata[i*record_size:(i+1)*record_size] + b"\x00" * (v7_struct.size - record_size))
+            new_chunk[8352:8356] = struct.pack("f", st_q[i])
+            new_chunk[8356:8360] = struct.pack("f", max(st_d[i], 0))
+            new_chunk[0:4] = V7_VERSION
+            new_chunk[8360:8362] = play_idx[i+1]
+            new_chunk[8362:8364] = play_idx[i+2]
+            assert len(new_chunk) == v7_struct.size
+            cd_array += new_chunk
+
+    except Exception as e:
+        print(f"ERROR: Could not read {filename}, got {e}", file=sys.stderr, flush=True)
+        return 'failed'
+        
+    if cd_array == bytearray():
+        return 'failed'
+        
+    # Atomic write protection preserved
+    tmp_filename = filename + ".tmp"
+    with gzip.open(tmp_filename, 'wb') as chunk_file:
+        chunk_file.write(bytes(cd_array))
+    os.replace(tmp_filename, filename)
+    return 'rescored'
+
 def rescore_files(filenames, **kwargs):
-    """Worker function: Processes a chunk of files and returns the count of files successfully attempted."""
-    count = 0
+    """Worker function: Processes a chunk of files and returns status tuples."""
+    results = []
     for filename in filenames:
-        rescore_file(filename, **kwargs)
-        count += 1
-    return count
+        status = rescore_file(filename, **kwargs)
+        results.append((filename, status))
+    return results
 
 
-def rescore_files_normal(filenames, **kwargs):
-    i = 0
-    for filename in filenames:
-        rescore_file(filename, **kwargs)
-        i += 1
-        logger.info(f"Processed {i} of {len(filenames)} chunks")
-
-
-def rescore(filenames, n_workers=16, n_jobs=1000, **kwargs):
+def rescore(filenames, n_workers=16, n_jobs=1000, manifest_path="processed_chunks.txt", **kwargs):
     if isinstance(filenames, str):
         if not filenames.endswith(".gz"):
             filenames = filenames + "/*.gz"
@@ -899,45 +704,45 @@ def rescore(filenames, n_workers=16, n_jobs=1000, **kwargs):
 
     total_files = len(filenames)
     if total_files == 0:
-        logger.info("No files found to rescore.")
+        print("No files found to rescore.", flush=True)
         return
 
-    # Avoid generating empty jobs if n_jobs > total_files
     actual_jobs = min(n_jobs, total_files)
     if actual_jobs == 0:
         actual_jobs = 1
 
-    logger.info(f"Rescoring {total_files} files with {n_workers} workers partitioned into {actual_jobs} jobs")
+    print(f"Rescoring {total_files} files with {n_workers} workers partitioned into {actual_jobs} batches...", flush=True)
 
     futures = []
     
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # 1. Distribute file chunks to the pool
-        for n in range(0, actual_jobs):
-            lo = n * total_files // actual_jobs
-            hi = min((n + 1) * total_files // actual_jobs, total_files)
-            
-            if lo < hi:
-                chunk = filenames[lo:hi]
-                futures.append(executor.submit(rescore_files, chunk, **kwargs))
-
-        # 2. Monitor progress cleanly as batches finish
-        completed_files = 0
-        completed_jobs = 0
-        last_log_percent = 0
-        
-        for future in as_completed(futures):
-            try:
-                # The worker returns the number of files it processed
-                files_processed = future.result()
-                completed_files += files_processed
-                completed_jobs += 1
+    with open(manifest_path, "a", buffering=1) as manifest_file:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            for n in range(0, actual_jobs):
+                lo = n * total_files // actual_jobs
+                hi = min((n + 1) * total_files // actual_jobs, total_files)
                 
-                # Log cleanly every ~10% of jobs completed
-                percent = int((completed_jobs / actual_jobs) * 100)
-                if percent >= last_log_percent + 10 or completed_jobs == actual_jobs:
-                    logger.info(f"Rescore Progress: {percent}% ({completed_files}/{total_files} files completed)")
-                    last_log_percent = percent
+                if lo < hi:
+                    chunk = filenames[lo:hi]
+                    futures.append(executor.submit(rescore_files, chunk, **kwargs))
+
+            completed_files = 0
+            completed_jobs = 0
+            
+            # Use standard text tracking instead of progress bars
+            for future in as_completed(futures):
+                try:
+                    job_results = future.result()
+                    for filename, status in job_results:
+                        completed_files += 1
+                        if status in ['rescored', 'already_v7']:
+                            manifest_file.write(filename + "\n")
                     
-            except Exception as e:
-                logger.error(f"A multiprocessing batch failed with error: {e}")
+                    # Force data synchronization onto disk
+                    manifest_file.flush()
+                    
+                    completed_jobs += 1
+                    # Progress track printout every batch collection
+                    print(f"[PROGRESS] Completed batch {completed_jobs}/{actual_jobs} | Total files processed: {completed_files}/{total_files}", flush=True)
+                        
+                except Exception as e:
+                    print(f"BATCH ERROR: A multiprocessing batch failed with error: {e}", file=sys.stderr, flush=True)
