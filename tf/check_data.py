@@ -70,7 +70,7 @@ if __name__ == '__main__':
     TEST_DIR = os.path.expanduser("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/test/")
     
     # Set how many random files you want to check per folder
-    CHUNKS_TO_CHECK = 10000
+    CHUNKS_TO_CHECK = 100000
     
     print("--- Verifying Training Data ---")
     verify_v7_chunks(TRAIN_DIR, CHUNKS_TO_CHECK)
