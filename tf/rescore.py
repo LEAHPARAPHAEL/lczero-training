@@ -1,3 +1,4 @@
+'''
 import glob
 import os
 import sys
@@ -41,6 +42,36 @@ def main():
         print("\nTesting data already fully completed!", flush=True)
     
     print("\nAll remaining operations finished!", flush=True)
+
+if __name__ == '__main__':
+    main()
+'''
+
+import glob
+import os
+from chunkparser import rescore
+
+def main():
+    # Gather directory patterns cleanly
+    train_dir = os.path.expanduser("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/")
+    test_dir = os.path.expanduser("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/test/")
+    
+    # Using recursive wildcards to ensure no nested run directories are missed
+    print("Scanning directories for files...", flush=True)
+    train_files = glob.glob(os.path.join(train_dir, "**/*.gz"), recursive=True)
+    test_files = glob.glob(os.path.join(test_dir, "**/*.gz"), recursive=True)
+    
+    print(f"Found {len(train_files)} training files and {len(test_files)} testing files on disk.", flush=True)
+    
+    if train_files:
+        print("\n--- Processing Training Data Pipeline ---", flush=True)
+        rescore(train_files)
+        
+    if test_files:
+        print("\n--- Processing Testing Data Pipeline ---", flush=True)
+        rescore(test_files)
+    
+    print("\nAll data validation and upgrading routines completed!", flush=True)
 
 if __name__ == '__main__':
     main()

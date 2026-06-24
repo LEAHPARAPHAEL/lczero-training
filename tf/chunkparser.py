@@ -628,7 +628,7 @@ def check_v7_file(filename):
             logger.info(f"st_q: {st_q}, st_d: {st_d}, opp_play: {opp_play}, my_next_play: {my_next_play}")
 
 
-
+'''
 def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
     v6_struct = struct.Struct(V6_STRUCT_STRING)
     v7_struct = struct.Struct(V7_STRUCT_STRING)
@@ -746,3 +746,140 @@ def rescore(filenames, n_workers=16, n_jobs=1000, manifest_path="processed_chunk
                         
                 except Exception as e:
                     print(f"BATCH ERROR: A multiprocessing batch failed with error: {e}", file=sys.stderr, flush=True)
+'''
+
+def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
+    v6_struct = struct.Struct(V6_STRUCT_STRING)
+    v7_struct = struct.Struct(V7_STRUCT_STRING)
+    record_size = v6_struct.size
+    cd_array = bytearray()
+
+    try:
+        # STEP 1: Fast 4-byte peek to protect Lustre from unnecessary decompression
+        with gzip.open(filename, "rb") as chunk_file:
+            version = chunk_file.read(4)
+            if version == V7_VERSION:
+                return 'already_v7'
+            if version != V6_VERSION:
+                return 'unknown_version'
+            
+            # STEP 2: Only read and decompress the rest if it's verified V6
+            chunk_file.seek(0)
+            chunkdata = chunk_file.read()
+            
+        if len(chunkdata) == 0:
+            return 'empty'
+
+        n_chunks = len(chunkdata) // record_size
+        qs = []
+        ds = []
+        play_idx = []
+        for i in range(n_chunks):
+            qs.append(struct.unpack(
+                "f", chunkdata[i*record_size+8280:i*record_size+8284])[0])
+            ds.append(struct.unpack(
+                "f", chunkdata[i*record_size+8288:i*record_size+8292])[0])
+            play_idx.append(
+                chunkdata[i*record_size+8344:i*record_size+8346])
+        play_idx += [struct.pack("H", 65535)] * 2
+
+        st_q = apply_alpha(qs, st_alpha)
+        st_d = apply_alpha(ds, st_alpha, alt_signs=False)
+        cd_array = b""
+        for i in range(n_chunks):
+            new_chunk = bytearray(
+                chunkdata[i*record_size:(i+1)*record_size] + b"\x00" * (v7_struct.size - record_size))
+            new_chunk[8352:8356] = struct.pack("f", st_q[i])
+            new_chunk[8356:8360] = struct.pack("f", max(st_d[i], 0))
+            new_chunk[0:4] = V7_VERSION
+            new_chunk[8360:8362] = play_idx[i+1]
+            new_chunk[8362:8364] = play_idx[i+2]
+            assert len(new_chunk) == v7_struct.size
+            cd_array += new_chunk
+
+    except Exception as e:
+        print(f"ERROR: Could not read {filename}, got {e}", file=sys.stderr, flush=True)
+        return 'failed'
+        
+    if cd_array == bytearray():
+        return 'failed'
+        
+    # STEP 3: Atomic update safeguards against mid-write job crashes
+    tmp_filename = filename + ".tmp"
+    with gzip.open(tmp_filename, 'wb') as chunk_file:
+        chunk_file.write(bytes(cd_array))
+    os.replace(tmp_filename, filename)
+    return 'rescored'
+
+
+def rescore_batch(filenames, **kwargs):
+    """Worker function: Processes a micro-batch of files and returns counts."""
+    rescored = 0
+    already_v7 = 0
+    failed = 0
+    for filename in filenames:
+        status = rescore_file(filename, **kwargs)
+        if status == 'rescored':
+            rescored += 1
+        elif status == 'already_v7':
+            already_v7 += 1
+        else:
+            failed += 1
+    return rescored, already_v7, failed
+
+
+def rescore(filenames, n_workers=16, micro_batch_size=64, **kwargs):
+    if isinstance(filenames, str):
+        if not filenames.endswith(".gz"):
+            filenames = filenames + "/*.gz"
+        filenames = glob.glob(filenames)
+
+    total_files = len(filenames)
+    if total_files == 0:
+        print("No files found to rescore.", flush=True)
+        return
+
+    print(f"Rescoring {total_files} files with {n_workers} workers via dynamic micro-batches...", flush=True)
+
+    # Helper generator to slice the global list into non-overlapping micro-batches
+    def get_micro_batches(iterable, size):
+        it = iter(iterable)
+        while True:
+            batch = list(itertools.islice(it, size))
+            if not batch:
+                break
+            yield batch
+
+    futures = []
+    total_rescored = 0
+    total_already_v7 = 0
+    total_failed = 0
+    
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit non-overlapping small batches to create a dynamic work queue
+        for batch in get_micro_batches(filenames, micro_batch_size):
+            futures.append(executor.submit(rescore_batch, batch, **kwargs))
+
+        total_batches = len(futures)
+        completed_batches = 0
+
+        # Collect finished tasks dynamically as they complete
+        for future in as_completed(futures):
+            try:
+                rescored, already_v7, failed = future.result()
+                total_rescored += rescored
+                total_already_v7 += already_v7
+                total_failed += failed
+                
+                completed_batches += 1
+                total_processed = total_rescored + total_already_v7 + total_failed
+                
+                # Unbuffered print streams optimized for tracking via `tail -f`
+                print(f"[PROGRESS] Batch {completed_batches}/{total_batches} finished | "
+                      f"Processed: {total_processed}/{total_files} | "
+                      f"Newly Rescored: {total_rescored} | "
+                      f"Skipped V7: {total_already_v7} | "
+                      f"Failures: {total_failed}", flush=True)
+                        
+            except Exception as e:
+                print(f"BATCH CRITICAL ERROR: An entire execution chunk failed: {e}", file=sys.stderr, flush=True)
