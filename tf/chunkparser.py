@@ -755,7 +755,7 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
     cd_array = bytearray()
 
     try:
-        # STEP 1: Fast 4-byte peek to protect Lustre from unnecessary decompression
+        # STEP 1: Fast 4-byte peek to check version instantly
         with gzip.open(filename, "rb") as chunk_file:
             version = chunk_file.read(4)
             if version == V7_VERSION:
@@ -763,7 +763,7 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
             if version != V6_VERSION:
                 return 'unknown_version'
             
-            # STEP 2: Only read and decompress the rest if it's verified V6
+            # STEP 2: Only decompress the rest if it's verified V6
             chunk_file.seek(0)
             chunkdata = chunk_file.read()
             
@@ -804,7 +804,7 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
     if cd_array == bytearray():
         return 'failed'
         
-    # STEP 3: Atomic update safeguards against mid-write job crashes
+    # STEP 3: Atomic write protection against mid-write job crashes
     tmp_filename = filename + ".tmp"
     with gzip.open(tmp_filename, 'wb') as chunk_file:
         chunk_file.write(bytes(cd_array))
@@ -813,22 +813,15 @@ def rescore_file(filename, st_alpha=1-1/6, lt_alpha=1-1/24):
 
 
 def rescore_batch(filenames, **kwargs):
-    """Worker function: Processes a micro-batch of files and returns counts."""
-    rescored = 0
-    already_v7 = 0
-    failed = 0
+    """Worker function: Processes a micro-batch and returns status tuples to Master."""
+    results = []
     for filename in filenames:
         status = rescore_file(filename, **kwargs)
-        if status == 'rescored':
-            rescored += 1
-        elif status == 'already_v7':
-            already_v7 += 1
-        else:
-            failed += 1
-    return rescored, already_v7, failed
+        results.append((filename, status))
+    return results
 
 
-def rescore(filenames, n_workers=16, micro_batch_size=64, **kwargs):
+def rescore(filenames, n_workers=16, micro_batch_size=64, manifest_path="processed_chunks.txt", **kwargs):
     if isinstance(filenames, str):
         if not filenames.endswith(".gz"):
             filenames = filenames + "/*.gz"
@@ -836,12 +829,11 @@ def rescore(filenames, n_workers=16, micro_batch_size=64, **kwargs):
 
     total_files = len(filenames)
     if total_files == 0:
-        print("No files found to rescore.", flush=True)
+        print("No files assigned to this run phase.", flush=True)
         return
 
-    print(f"Rescoring {total_files} files with {n_workers} workers via dynamic micro-batches...", flush=True)
+    print(f"Rescoring {total_files} filtered files via dynamic micro-batches...", flush=True)
 
-    # Helper generator to slice the global list into non-overlapping micro-batches
     def get_micro_batches(iterable, size):
         it = iter(iterable)
         while True:
@@ -855,31 +847,39 @@ def rescore(filenames, n_workers=16, micro_batch_size=64, **kwargs):
     total_already_v7 = 0
     total_failed = 0
     
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # Submit non-overlapping small batches to create a dynamic work queue
-        for batch in get_micro_batches(filenames, micro_batch_size):
-            futures.append(executor.submit(rescore_batch, batch, **kwargs))
+    # Open manifest in append-mode with line buffering (buffering=1)
+    with open(manifest_path, "a", buffering=1) as manifest_file:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            for batch in get_micro_batches(filenames, micro_batch_size):
+                futures.append(executor.submit(rescore_batch, batch, **kwargs))
 
-        total_batches = len(futures)
-        completed_batches = 0
+            total_batches = len(futures)
+            completed_batches = 0
 
-        # Collect finished tasks dynamically as they complete
-        for future in as_completed(futures):
-            try:
-                rescored, already_v7, failed = future.result()
-                total_rescored += rescored
-                total_already_v7 += already_v7
-                total_failed += failed
-                
-                completed_batches += 1
-                total_processed = total_rescored + total_already_v7 + total_failed
-                
-                # Unbuffered print streams optimized for tracking via `tail -f`
-                print(f"[PROGRESS] Batch {completed_batches}/{total_batches} finished | "
-                      f"Processed: {total_processed}/{total_files} | "
-                      f"Newly Rescored: {total_rescored} | "
-                      f"Skipped V7: {total_already_v7} | "
-                      f"Failures: {total_failed}", flush=True)
-                        
-            except Exception as e:
-                print(f"BATCH CRITICAL ERROR: An entire execution chunk failed: {e}", file=sys.stderr, flush=True)
+            for future in as_completed(futures):
+                try:
+                    job_results = future.result()
+                    for filename, status in job_results:
+                        if status == 'rescored':
+                            total_rescored += 1
+                            manifest_file.write(filename + "\n")
+                        elif status == 'already_v7':
+                            total_already_v7 += 1
+                            manifest_file.write(filename + "\n")
+                        else:
+                            total_failed += 1
+                    
+                    # Force manifest text to commit to disk immediately
+                    manifest_file.flush()
+                    
+                    completed_batches += 1
+                    total_processed = total_rescored + total_already_v7 + total_failed
+                    
+                    print(f"[PROGRESS] Batch {completed_batches}/{total_batches} finished | "
+                          f"Processed: {total_processed}/{total_files} | "
+                          f"Newly Rescored: {total_rescored} | "
+                          f"Confirmed V7: {total_already_v7} | "
+                          f"Failures: {total_failed}", flush=True)
+                            
+                except Exception as e:
+                    print(f"BATCH CRITICAL ERROR: An entire execution chunk failed: {e}", file=sys.stderr, flush=True)

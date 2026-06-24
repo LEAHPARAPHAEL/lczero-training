@@ -2570,32 +2570,62 @@ class TFProcess:
         kernel_size : int, name: str, training: bool, layer_idx = 0):
         activations = {}
 
-        bn1_out = self.batch_norm(inputs, axis = -1, name=name+"/bn1")
-        activations[name + "/bn1"] = bn1_out
+        if self.prenorm:
+            ln1_out = self.encoder_norm(
+                name=name+"/ln1", epsilon=self.encoder_norm_epsilon)(inputs)
+            activations[name + "/ln1"] = ln1_out
 
-        attn_output, attn_wts, activations_mha = self.mha(
-            bn1_out, emb_size, d_model, num_heads, name=name + "/mha", layer_idx=layer_idx)
-        activations.update(activations_mha)
+            attn_output, attn_wts, activations_mha = self.mha(
+                ln1_out, emb_size, d_model, num_heads, name=name + "/mha", layer_idx=layer_idx)
+            activations.update(activations_mha)
 
-        attn_output = tf.keras.layers.Dropout(
-            self.dropout_rate, name=name + "/dropout1")(attn_output, training=training)
-        out1 = inputs + attn_output
+            attn_output = tf.keras.layers.Dropout(
+                self.dropout_rate, name=name + "/dropout1")(attn_output, training=training)
+            out1 = inputs + attn_output
 
-        bn2_out = self.batch_norm(out1, axis = -1, name=name+"/bn1")
-        activations[name + "/bn2"] = bn2_out
+            ln2_out = self.encoder_norm(
+                name=name+"/ln2", epsilon=self.encoder_norm_epsilon)(out1)
+            activations[name + "/ln2"] = ln2_out
 
-        if block_type == 'T':
-            ffn_output, activations_ffn = self.ffn(bn2_out, emb_size, dff, name=name + "/ffn", glu=self.glu)
-        elif block_type == 'D':
-            ffn_output, activations_ffn = self.depthwise_ffn(bn2_out, emb_size, dff, mask, kernel_size, name=name + "/ffn", glu=self.glu)
-        activations.update(activations_ffn)
+            if block_type == 'T':
+                ffn_output, activations_ffn = self.ffn(ln2_out, emb_size, dff, name=name + "/ffn", glu=self.glu)
+            elif block_type == 'D':
+                ffn_output, activations_ffn = self.depthwise_ffn(ln2_out, emb_size, dff, mask, kernel_size, name=name + "/ffn", glu=self.glu)
+            activations.update(activations_ffn)
 
-        ffn_output = tf.keras.layers.Dropout(
-            self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
-        out2 = out1 + ffn_output
+            ffn_output = tf.keras.layers.Dropout(
+                self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
+            out2 = out1 + ffn_output
 
-        return out2, attn_wts, activations
+            return out2, attn_wts, activations
 
+        else:
+            attn_output, attn_wts, activations_mha = self.mha(
+                inputs, emb_size, d_model, num_heads, name=name + "/mha", layer_idx=layer_idx)
+            activations.update(activations_mha)
+
+            attn_output = tf.keras.layers.Dropout(
+                self.dropout_rate, name=name + "/dropout1")(attn_output, training=training)
+
+            out1 = self.encoder_norm(
+                name=name+"/ln1", epsilon = self.encoder_norm_epsilon)(inputs + attn_output * self.deepnorm_alpha)
+            activations[name + "/ln1"] = out1
+
+            if block_type == 'T':
+                ffn_output, activations_ffn = self.ffn(out1, emb_size, dff, name=name + "/ffn", glu=self.glu)
+            elif block_type == 'D':
+                ffn_output, activations_ffn = self.depthwise_ffn(out1, emb_size, dff, mask, kernel_size, name=name + "/ffn", glu=self.glu)
+
+            ffn_output = tf.keras.layers.Dropout(
+                self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
+            
+            activations.update(activations_ffn)
+
+            out2 = self.encoder_norm(
+                name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(out1 + ffn_output * self.deepnorm_alpha)
+            activations[name + "/ln2"] = out2
+
+            return out2, attn_wts, activations
 
     def smolgen_weights(self, inputs, heads: int, hidden_channels: int, hidden_sz: int, gen_sz: int, name: str, activation="swish"):
         compressed = tf.keras.layers.Dense(
@@ -2955,14 +2985,20 @@ class TFProcess:
             flow = tf.keras.layers.Dense(target_d_model, 
                                         kernel_initializer="glorot_normal",
                                         name=name + "/dense")(flow)
-
+        
+        if not self.prenorm and self.use_cnn_enc_ln:
+            flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+            #flow = ma_gating(flow, name=name+'/ma_gating')
+            
         return flow
 
     def encoder_to_encoder(self, flow, current_channels, target_d_model, name):
         flow = tf.keras.layers.Dense(target_d_model, 
                                     kernel_initializer="glorot_normal",
                                     name=name + "/dense")(flow)
-
+        
+        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+        #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_cnn(self, flow, target_channels, name):
@@ -3061,7 +3097,7 @@ class TFProcess:
             flow = tf.keras.layers.Dense(self.embedding_size, kernel_initializer="glorot_normal",
                                         activation=self.DEFAULT_ACTIVATION,
                                         name=name+"input")(flow)
-            flow = self.batch_norm(inputs, axis = -1, name="input/bn")
+            flow = self.encoder_norm(name=name+"input/ln", epsilon = self.encoder_norm_epsilon)(flow)
             flow = ma_gating(flow, name=name+'input')
 
             if self.embedding_ffn == 'T':
@@ -3069,7 +3105,10 @@ class TFProcess:
             elif self.embedding_ffn == 'D':
                 ffn_output, activations = self.depthwise_ffn(flow, self.embedding_size, self.encoder_dff, mask, kernel_size, name=name + "input/ffn")
 
-            flow = self.batch_norm(flow + ffn_output, axis = -1, name=name+"/bn1")
+            if self.prenorm:
+                flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output)
+            else:
+                flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * self.deepnorm_alpha)
 
             
         return flow
@@ -3147,7 +3186,8 @@ class TFProcess:
                 attn_wts.append(block_attn)
             activations.update(block_acts)
 
-        flow = self.batch_norm(inputs, axis = -1, name="final_reshape/bn")
+        if self._is_spatial(self.blocks[-1]) or self.prenorm:
+            flow = self.encoder_norm(name=name+"final_reshape/ln", epsilon=self.encoder_norm_epsilon)(flow)
 
         flow_ = flow
 
