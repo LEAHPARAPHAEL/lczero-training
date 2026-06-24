@@ -65,11 +65,11 @@ def main():
     
     if train_files:
         print("\n--- Processing Training Data Pipeline ---", flush=True)
-        rescore(train_files)
+        rescore(train_files, n_workers=40)
         
     if test_files:
         print("\n--- Processing Testing Data Pipeline ---", flush=True)
-        rescore(test_files)
+        rescore(test_files, n_workers=40)
     
     print("\nAll data validation and upgrading routines completed!", flush=True)
 
