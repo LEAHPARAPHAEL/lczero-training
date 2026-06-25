@@ -1,68 +1,90 @@
+#!/usr/bin/env python3
 import os
-import glob
-import requests
-import tarfile
+import sys
 import json
 import random
+import struct
+import gzip
 import logging
+import tarfile
+import threading
+import requests
+import numpy as np
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-
-# Import Daniel's custom rescoring tool
-from chunkparser import rescore
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Set up HPC-friendly Logging ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
+# Global signals for thread synchronization
+abort_event = threading.Event()
+state_lock = threading.Lock()
 
-def enforce_v7_batch(filepaths):
-    """
-    Scans a list of files. If a file is not strictly V7 (or is unreadable), 
-    it is deleted. Returns the number of successfully verified V7 files.
-    """
-    V7_VERSION = b'\x07\x00\x00\x00' # Struct packed integer 7
-    valid_v7_count = 0
-    
-    for file_path in filepaths:
-        if not os.path.exists(file_path):
-            continue # File was already deleted by chunkparser
-            
-        is_valid = False
-        try:
-            with gzip.open(file_path, 'rb') as f:
-                if f.read(4) == V7_VERSION:
-                    is_valid = True
-        except Exception:
-            pass # Unreadable or corrupted GZIP
-            
-        if is_valid:
-            valid_v7_count += 1
+# --- Structural Constants from Chunkparser ---
+V6_VERSION = struct.pack('i', 6)
+V7_VERSION = struct.pack('i', 7)
+V6_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffffffffffffIHH4H'
+V7_STRUCT_STRING = "4si7432s832sBBBBBBBbfffffffffffffffIHHfffHHffffffff"
+
+v6_struct = struct.Struct(V6_STRUCT_STRING)
+v7_struct = struct.Struct(V7_STRUCT_STRING)
+V6_RECORD_SIZE = v6_struct.size
+V7_RECORD_SIZE = v7_struct.size
+
+# --- Numerical Rescoring Utilities ---
+def apply_alpha(qs, alpha, alt_signs=True):
+    if not isinstance(qs, np.ndarray):
+        qs = np.array(qs)
+    n = len(qs)
+    signs = (-1)**np.arange(n) if alt_signs else 1
+    qs = qs * signs
+    q_st = np.zeros(n)
+    val = 0
+    for i in range(n):
+        if i == 0:
+            val = qs[-1]
         else:
-            try:
-                os.remove(file_path)
-            except OSError:
-                pass
-                
-    return valid_v7_count
+            val = alpha * val + qs[-i-1] * (1 - alpha)
+        q_st[-i-1] = val
+    q_st = q_st * signs
+    return q_st
 
-def clean_tmp_files(directory):
-    """Deletes any incomplete .tmp files from a previous crashed run."""
-    tmp_files = glob.glob(os.path.join(directory, "**/*.tmp"), recursive=True)
-    for tmp in tmp_files:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    if tmp_files:
-        logger.info(f"Cleaned up {len(tmp_files)} incomplete .tmp files in {directory}")
+def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
+    """Processes uncompressed chunk data from V6 to V7 in memory."""
+    n_chunks = len(chunkdata) // V6_RECORD_SIZE
+    qs, ds, play_idx = [], [], []
+    
+    for i in range(n_chunks):
+        offset = i * V6_RECORD_SIZE
+        qs.append(struct.unpack("f", chunkdata[offset+8280:offset+8284])[0])
+        ds.append(struct.unpack("f", chunkdata[offset+8288:offset+8292])[0])
+        play_idx.append(chunkdata[offset+8344:offset+8346])
+    play_idx += [struct.pack("H", 65535)] * 2
 
+    st_q = apply_alpha(qs, st_alpha)
+    st_d = apply_alpha(ds, st_alpha, alt_signs=False)
+    
+    cd_array = bytearray()
+    for i in range(n_chunks):
+        offset = i * V6_RECORD_SIZE
+        new_chunk = bytearray(chunkdata[offset:offset+V6_RECORD_SIZE] + b"\x00" * (V7_RECORD_SIZE - V6_RECORD_SIZE))
+        new_chunk[8352:8356] = struct.pack("f", st_q[i])
+        new_chunk[8356:8360] = struct.pack("f", max(st_d[i], 0))
+        new_chunk[0:4] = V7_VERSION
+        new_chunk[8360:8362] = play_idx[i+1]
+        new_chunk[8362:8364] = play_idx[i+2]
+        cd_array += new_chunk
+        
+    return bytes(cd_array)
+
+# --- State Management ---
 def load_state(state_file):
-    """Loads the progress state from disk, or creates a fresh one."""
     if os.path.exists(state_file):
         with open(state_file, 'r') as f:
             state = json.load(f)
@@ -82,15 +104,126 @@ def load_state(state_file):
     }
 
 def save_state(state_file, state):
-    """Saves the current progress to disk."""
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
-def download_extract_and_rescore(index_url, base_dir, target_games, max_gb, train_ratio=0.8):
-    """
-    Downloads, extracts, splits, and rescores data on the fly. 
-    Fully resumable, crash-safe, and optimized for supercomputer logging.
-    """
+# --- Core Pipeline Process ---
+def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, train_ratio):
+    if abort_event.is_set():
+        return {"success": False, "reason": "Aborted before start", "file_name": file_name}
+
+    file_path = os.path.join(base_dir, file_name)
+    stats = {
+        "file_name": file_name,
+        "train_count": 0, 
+        "test_count": 0, 
+        "bytes": 0, 
+        "success": False,
+        "rescored": 0,
+        "already_v7": 0,
+        "skipped": 0
+    }
+
+    try:
+        # --- PHASE A: Stream Download ---
+        logger.info(f"[{file_name}] Starting download...")
+        with requests.get(file_url, stream=True) as r:
+            r.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=65536):
+                    if abort_event.is_set():
+                        return {"success": False, "reason": "Aborted during download", "file_name": file_name}
+                    if chunk:
+                        f.write(chunk)
+                                
+        logger.info(f"[{file_name}] Download complete. Processing elements entirely in RAM...")
+
+        # --- PHASE B: Extract, Rescore, and Route in Memory ---
+        if abort_event.is_set(): 
+            return {"success": False, "reason": "Aborted before processing", "file_name": file_name}
+            
+        with tarfile.open(file_path, 'r:*') as tar:
+            members = [
+                m for m in tar.getmembers() 
+                if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))
+            ]
+            
+            for member in members:
+                if abort_event.is_set():
+                    return {"success": False, "reason": "Aborted during extraction", "file_name": file_name}
+
+                f_mem = tar.extractfile(member)
+                if f_mem is None:
+                    continue
+                
+                # Read compressed payload directly from Tar stream
+                compressed_payload = f_mem.read()
+                
+                try:
+                    chunkdata = gzip.decompress(compressed_payload)
+                except Exception as decompress_err:
+                    logger.error(f"[{file_name}] Decompression failed for sub-file {member.name}: {decompress_err}")
+                    stats["skipped"] += 1
+                    continue
+
+                if len(chunkdata) == 0:
+                    stats["skipped"] += 1
+                    continue
+
+                version = chunkdata[0:4]
+                out_bytes = None
+
+                # Version Filter Evaluation
+                if version == V7_VERSION:
+                    out_bytes = compressed_payload
+                    stats["already_v7"] += 1
+                elif version == V6_VERSION:
+                    try:
+                        rescored_data = rescore_chunk_data(chunkdata)
+                        out_bytes = gzip.compress(rescored_data)
+                        stats["rescored"] += 1
+                    except Exception as rescore_err:
+                        logger.error(f"[{file_name}] Mathematical rescoring failed on {member.name}: {rescore_err}")
+                        stats["skipped"] += 1
+                        continue
+                else:
+                    # Automatically drop unidentified or non-v6 versions without writing to disk
+                    stats["skipped"] += 1
+                    continue
+
+                # Route dynamically into Train/Test partitions
+                if random.random() < train_ratio:
+                    dest_dir = train_dir
+                    stats["train_count"] += 1
+                else:
+                    dest_dir = test_dir
+                    stats["test_count"] += 1
+
+                # Crash-proof Atomic File Persistence
+                final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
+                tmp_output_path = final_output_path + ".tmp"
+                
+                with open(tmp_output_path, 'wb') as out_f:
+                    out_f.write(out_bytes)
+                os.replace(tmp_output_path, final_output_path)
+                
+                stats["bytes"] += len(out_bytes)
+
+        stats["success"] = True
+        logger.info(f"[{file_name}] Finished! Rescored: {stats['rescored']} | Confirmed V7: {stats['already_v7']} | Skipped: {stats['skipped']}")
+
+    except Exception as e:
+        logger.error(f"[{file_name}] Core worker failed with error: {e}")
+        stats["success"] = False
+    finally:
+        # --- PHASE C: Cleanup Raw Tar ---
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"[{file_name}] Cleared temporary tar archive from scratch.")
+            
+    return stats
+
+def download_and_rescore_pipeline(index_url, base_dir, target_games, max_gb, train_ratio=0.8, concurrent_archives=4):
     base_dir = os.path.expanduser(base_dir)
     train_dir = os.path.join(base_dir, "train")
     test_dir = os.path.join(base_dir, "test")
@@ -98,29 +231,24 @@ def download_extract_and_rescore(index_url, base_dir, target_games, max_gb, trai
     os.makedirs(train_dir, exist_ok=True)
     os.makedirs(test_dir, exist_ok=True)
     
-    logger.info("Running pre-flight cleanup of aborted rescores...")
-    clean_tmp_files(train_dir)
-    clean_tmp_files(test_dir)
-    
     max_bytes = max_gb * 1024 * 1024 * 1024
     state_file = os.path.join(base_dir, "resume_state.json")
     state = load_state(state_file)
 
-    logger.info(f"Base Directory: {base_dir}")
-    logger.info(f"Resuming from state: {state['total_games_extracted']} total games "
-                f"({state['train_games_extracted']} train | {state['test_games_extracted']} test), "
-                f"{state['total_bytes_extracted'] / (1024**3):.2f} GB used.")
+    logger.info(f"Base Destination: {base_dir}")
+    logger.info(f"Resuming pipeline: {state['total_games_extracted']} total games processed, "
+                f"{state['total_bytes_extracted'] / (1024**3):.2f} GB of safe V7 files on disk.")
     
     if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
-        logger.info("Target limits already reached in previous runs. Exiting.")
+        logger.info("Target milestones reached. Exiting pipeline.")
         return
 
-    logger.info(f"Fetching index from: {index_url}")
+    logger.info(f"Scanning online directory structure: {index_url}")
     try:
         response = requests.get(index_url)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch the URL: {e}")
+        logger.error(f"Failed to fetch resource index: {e}")
         return
 
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -131,133 +259,66 @@ def download_extract_and_rescore(index_url, base_dir, target_games, max_gb, trai
         and (a.get('href').endswith('.tar') or a.get('href').endswith('.tar.gz'))
     ]
 
-    if not file_links:
-        logger.warning("No valid archive files found on the page.")
+    # Single manifest filter check
+    pending_archives = [f for f in file_links if f not in state["processed_archives"]]
+
+    if not pending_archives:
+        logger.warning("No new online data bundles found to process.")
         return
 
-    for file_name in file_links:
-        if file_name in state["processed_archives"]:
-            continue
+    logger.info(f"Saturating pipeline with {len(pending_archives)} pending archives.")
 
-        if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
-            break
-
-        file_url = urljoin(index_url, file_name)
-        clean_file_name = os.path.basename(urlparse(file_url).path)
-        file_path = os.path.join(base_dir, clean_file_name)
-
-        logger.info(f"{'='*50}")
-        logger.info(f"Processing: {clean_file_name}")
-        logger.info(f"{'='*50}")
-        
-        # --- PHASE A: Download ---
-        logger.info(f"Starting download of {clean_file_name}...")
-        with requests.get(file_url, stream=True) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
-            downloaded_bytes = 0
-            last_log_percent = 0
-            
-            with open(file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        size = f.write(chunk)
-                        downloaded_bytes += size
-                        
-                        # Log progress every 10%
-                        if total_size > 0:
-                            percent = int((downloaded_bytes / total_size) * 100)
-                            if percent >= last_log_percent + 1:
-                                logger.info(f"Downloading: {percent}% ({downloaded_bytes / (1024**2):.1f} MB / {total_size / (1024**2):.1f} MB)")
-                                last_log_percent = percent
-        
-        logger.info(f"Download complete for {clean_file_name}.")
-
-        # --- PHASE B: Extract & Route ---
-        logger.info("Extracting and routing files...")
-        local_train_count = 0
-        local_test_count = 0
-        local_bytes = 0
-        current_batch_train_files = []
-        current_batch_test_files = []
-        
-        try:
-            with tarfile.open(file_path, 'r:*') as tar:
-                members = tar.getmembers()
-                files_to_extract = [
-                    m for m in members 
-                    if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))
-                ]
-                total_files = len(files_to_extract)
-                
-                for i, member in enumerate(files_to_extract, 1):
-                    if (state["total_games_extracted"] + local_train_count + local_test_count) >= target_games or \
-                       (state["total_bytes_extracted"] + local_bytes) >= max_bytes:
-                        break
-
-                    if random.random() < train_ratio:
-                        dest_dir = train_dir
-                        local_train_count += 1
-                        if member.name.endswith('.gz'):
-                            current_batch_train_files.append(os.path.join(dest_dir, member.name))
-                    else:
-                        dest_dir = test_dir
-                        local_test_count += 1
-                        if member.name.endswith('.gz'):
-                            current_batch_test_files.append(os.path.join(dest_dir, member.name))
-
-                    tar.extract(member, path=dest_dir)
-                    local_bytes += member.size
+    with ThreadPoolExecutor(max_workers=concurrent_archives) as executor:
+        futures = []
+        for file_name in pending_archives:
+            with state_lock:
+                if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
+                    abort_event.set()
+                    break
                     
-                    # Log extraction progress every 1000 files
-                    if i % 1000 == 0 or i == total_files:
-                        logger.info(f"Extracted {i}/{total_files} files...")
+            file_url = urljoin(index_url, file_name)
+            clean_name = os.path.basename(urlparse(file_url).path)
+            
+            futures.append(executor.submit(
+                process_single_archive, file_url, clean_name, base_dir, 
+                train_dir, test_dir, train_ratio
+            ))
+
+        for future in as_completed(futures):
+            result = future.result()
+            
+            if result["success"]:
+                with state_lock:
+                    state["train_games_extracted"] += result["train_count"]
+                    state["test_games_extracted"] += result["test_count"]
+                    state["total_games_extracted"] += (result["train_count"] + result["test_count"])
+                    state["total_bytes_extracted"] += result["bytes"]
+                    state["processed_archives"].append(result["file_name"])
                     
-            # --- PHASE C: On-the-fly Rescoring ---
-            if current_batch_train_files:
-                logger.info(f"Rescoring {len(current_batch_train_files)} Training files from {clean_file_name}...")
-                rescore(current_batch_train_files)
-                # Sweep and get the TRUE count of files that survived
-                local_train_count = enforce_v7_batch(current_batch_train_files)
-                
-            if current_batch_test_files:
-                logger.info(f"Rescoring {len(current_batch_test_files)} Testing files from {clean_file_name}...")
-                rescore(current_batch_test_files)
-                # Sweep and get the TRUE count of files that survived
-                local_test_count = enforce_v7_batch(current_batch_test_files)
-                
-            # --- PHASE D: Commit State & Cleanup ---
-            state["train_games_extracted"] += local_train_count
-            state["test_games_extracted"] += local_test_count
-            state["total_games_extracted"] += (local_train_count + local_test_count)
-            # Note: local_bytes might be slightly off now due to deleted files, 
-            # but it is close enough for a safe disk-space ceiling.
-            state["total_bytes_extracted"] += local_bytes 
-            state["processed_archives"].append(file_name)
-            
-            save_state(state_file, state)
-            
-            current_gb = state["total_bytes_extracted"] / (1024**3)
-            logger.info(f"[Archive Complete] Running Total: {state['total_games_extracted']}/{target_games} games | {current_gb:.2f}/{max_gb} GB")
-            logger.info(f"Current Split: Train({state['train_games_extracted']}) / Test({state['test_games_extracted']})")
-                
-        except Exception as e:
-            logger.error(f"Error processing {clean_file_name}: {e}")
-            logger.warning("State not committed for this archive. It will be retried on next run.")
+                    save_state(state_file, state)
+                    
+                    current_gb = state["total_bytes_extracted"] / (1024**3)
+                    logger.info(f"{'='*60}")
+                    logger.info(f"--- ARCHIVE SUBMISSION TRACKED AND COMMITTED ---")
+                    logger.info(f"Bundle Manifest Verified: {result['file_name']}")
+                    logger.info(f"Global Pool Metric: {state['total_games_extracted']}/{target_games} games | {current_gb:.2f}/{max_gb} GB")
+                    logger.info(f"Partition Matrix: Train({state['train_games_extracted']}) / Test({state['test_games_extracted']})")
+                    logger.info(f"{'='*60}")
+                    
+                    if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
+                        logger.info("Limits achieved. Executing structured task wind-down...")
+                        abort_event.set()
 
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info("Deleted archive to reclaim disk space.")
-
-    logger.info("[SUCCESS] Pipeline execution finished.")
-    logger.info(f"Final Count -> Train: {state['train_games_extracted']} | Test: {state['test_games_extracted']}")
+    logger.info("[SUCCESS] Integrated Download & Rescore Pipeline Finished.")
 
 if __name__ == "__main__":
     URL = "https://data.lczero.org/files/training_data/test91/"
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
-    TARGET_GAMES = 10000000
-    MAX_DISK_SPACE_GB = 400
-    TRAIN_RATIO = 0.95  
+    TARGET_GAMES = 100000000
+    MAX_DISK_SPACE_GB = 4000  
+    TRAIN_RATIO = 0.95
     
-    download_extract_and_rescore(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO)
+    CONCURRENT_ARCHIVES = 8
+    
+    download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO, CONCURRENT_ARCHIVES)
