@@ -38,3 +38,6 @@ echo $SCRATCH
 
 echo $WORK
 /lustre/fswork/projects/rech/kwf/uzr96yg
+
+
+sbatch --job-name=lustre_purge --time=03:00:00 --ntasks=1 --cpus-per-task=1 --wrap="find -P data_to_delete \( -type f -o -type l \) -delete && find -P data_to_delete -type d -empty -delete" --partition=prepost --account=kwf@v100

@@ -444,14 +444,12 @@ message NetworkFormat {
   optional bool prenorm = 21;
 
 
-  // --- ADDED FOR CHESSFORMER MASKS ---
-  //message AttentionMask {
-  //  optional string piece_type = 1;
-  //  repeated uint32 head_indices = 2;
-  //  repeated uint32 layer_indices = 3;
-  //}
-  //repeated AttentionMask attention_masks = 11;
-  // -----------------------------------
+  message AttentionMask {
+    optional string pattern = 1;
+    repeated uint32 head_indices = 2;
+    repeated uint32 layer_indices = 3;
+  }
+  repeated AttentionMask attention_masks = 22;
 }
 
 message Format {

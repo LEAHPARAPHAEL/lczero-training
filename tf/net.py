@@ -129,7 +129,7 @@ class Net:
         if mask_rules:
             for rule in mask_rules:
                 mask_msg = self.pb.format.network_format.attention_masks.add()
-                mask_msg.piece_type = rule['piece']
+                mask_msg.pattern = rule['pattern']
                 mask_msg.head_indices.extend(rule['heads'])
                 
                 if rule.get('layers') != "all":

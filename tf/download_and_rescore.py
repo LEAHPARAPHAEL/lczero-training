@@ -37,7 +37,6 @@ v7_struct = struct.Struct(V7_STRUCT_STRING)
 V6_RECORD_SIZE = v6_struct.size
 V7_RECORD_SIZE = v7_struct.size
 
-# --- Numerical Rescoring Utilities ---
 def apply_alpha(qs, alpha, alt_signs=True):
     if not isinstance(qs, np.ndarray):
         qs = np.array(qs)
@@ -83,7 +82,6 @@ def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
         
     return bytes(cd_array)
 
-# --- State Management ---
 def load_state(state_file):
     if os.path.exists(state_file):
         with open(state_file, 'r') as f:
@@ -107,7 +105,6 @@ def save_state(state_file, state):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
-# --- Core Pipeline Process ---
 def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, train_ratio):
     if abort_event.is_set():
         return {"success": False, "reason": "Aborted before start", "file_name": file_name}
@@ -156,7 +153,6 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                 if f_mem is None:
                     continue
                 
-                # Read compressed payload directly from Tar stream
                 compressed_payload = f_mem.read()
                 
                 try:
@@ -173,7 +169,6 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                 version = chunkdata[0:4]
                 out_bytes = None
 
-                # Version Filter Evaluation
                 if version == V7_VERSION:
                     out_bytes = compressed_payload
                     stats["already_v7"] += 1
@@ -187,11 +182,9 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                         stats["skipped"] += 1
                         continue
                 else:
-                    # Automatically drop unidentified or non-v6 versions without writing to disk
                     stats["skipped"] += 1
                     continue
 
-                # Route dynamically into Train/Test partitions
                 if random.random() < train_ratio:
                     dest_dir = train_dir
                     stats["train_count"] += 1
@@ -199,7 +192,6 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     dest_dir = test_dir
                     stats["test_count"] += 1
 
-                # Crash-proof Atomic File Persistence
                 final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
                 tmp_output_path = final_output_path + ".tmp"
                 
@@ -216,14 +208,14 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
         logger.error(f"[{file_name}] Core worker failed with error: {e}")
         stats["success"] = False
     finally:
-        # --- PHASE C: Cleanup Raw Tar ---
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"[{file_name}] Cleared temporary tar archive from scratch.")
             
     return stats
 
-def download_and_rescore_pipeline(index_url, base_dir, target_games, max_gb, train_ratio=0.8, concurrent_archives=4):
+
+def download_and_rescore_pipeline(index_url, base_dir, target_train_games, target_test_games, max_gb, concurrent_archives=4):
     base_dir = os.path.expanduser(base_dir)
     train_dir = os.path.join(base_dir, "train")
     test_dir = os.path.join(base_dir, "test")
@@ -236,11 +228,15 @@ def download_and_rescore_pipeline(index_url, base_dir, target_games, max_gb, tra
     state = load_state(state_file)
 
     logger.info(f"Base Destination: {base_dir}")
-    logger.info(f"Resuming pipeline: {state['total_games_extracted']} total games processed, "
-                f"{state['total_bytes_extracted'] / (1024**3):.2f} GB of safe V7 files on disk.")
+    logger.info(f"Resuming pipeline: Current Train = {state['train_games_extracted']}/{target_train_games} | Current Test = {state['test_games_extracted']}/{target_test_games}")
+    logger.info(f"Storage allocated: {state['total_bytes_extracted'] / (1024**3):.2f} GB / {max_gb} GB used.")
     
-    if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
-        logger.info("Target milestones reached. Exiting pipeline.")
+    # Vérification d'arrêt basée sur la complétion des DEUX dossiers cibles
+    if state["train_games_extracted"] >= target_train_games and state["test_games_extracted"] >= target_test_games:
+        logger.info("Both specific training and testing target counts are already satisfied! Exiting.")
+        return
+    if state["total_bytes_extracted"] >= max_bytes:
+        logger.info("Disk space limit reached. Exiting.")
         return
 
     logger.info(f"Scanning online directory structure: {index_url}")
@@ -259,29 +255,57 @@ def download_and_rescore_pipeline(index_url, base_dir, target_games, max_gb, tra
         and (a.get('href').endswith('.tar') or a.get('href').endswith('.tar.gz'))
     ]
 
-    # Single manifest filter check
     pending_archives = [f for f in file_links if f not in state["processed_archives"]]
 
     if not pending_archives:
         logger.warning("No new online data bundles found to process.")
         return
 
+    # Calcul du ratio cible idéal final à partir de vos volumes demandés
+    total_target = target_train_games + target_test_games
+    nominal_train_ratio = target_train_games / total_target
+    target_test_proportion = target_test_games / total_target
+
+    logger.info(f"Nominal target split: {nominal_train_ratio*100:%} Train / {target_test_proportion*100:%} Test")
     logger.info(f"Saturating pipeline with {len(pending_archives)} pending archives.")
 
     with ThreadPoolExecutor(max_workers=concurrent_archives) as executor:
         futures = []
         for file_name in pending_archives:
             with state_lock:
-                if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
+                # Vérification dynamique des quotas restants
+                rem_train = max(0, target_train_games - state["train_games_extracted"])
+                rem_test = max(0, target_test_games - state["test_games_extracted"])
+                
+                if (rem_train == 0 and rem_test == 0) or state["total_bytes_extracted"] >= max_bytes:
                     abort_event.set()
                     break
+
+                current_total_games = state["train_games_extracted"] + state["test_games_extracted"]
+                
+                if rem_train == 0:
+                    archive_ratio = 0.0  # Plus besoin de jeux d'entraînement, on envoie tout à TEST
+                elif rem_test == 0:
+                    archive_ratio = 1.0  # Plus besoin de jeux de test, on envoie tout à TRAIN
+                else:
+                    # Calcul de la proportion réelle de test actuelle sur le disque
+                    current_test_prop = state["test_games_extracted"] / current_total_games if current_total_games > 0 else target_test_proportion
+                    
+                    if current_test_prop < target_test_proportion:
+                        # 🚨 CATCH-UP SÉCURISÉ : Le dossier test est en retard ! 
+                        # On force le ratio à 0.0 pour injecter 100% de cette archive dans TEST
+                        archive_ratio = 0.0
+                        logger.warning(f"-> Test deficit detected ({current_test_prop*100:.2f}% < {target_test_proportion*100:.2f}%). Forcing ALL elements of next bundle to TEST set.")
+                    else:
+                        # Situation nominale équilibrée, on applique le ratio de base
+                        archive_ratio = nominal_train_ratio
                     
             file_url = urljoin(index_url, file_name)
             clean_name = os.path.basename(urlparse(file_url).path)
             
             futures.append(executor.submit(
                 process_single_archive, file_url, clean_name, base_dir, 
-                train_dir, test_dir, train_ratio
+                train_dir, test_dir, archive_ratio
             ))
 
         for future in as_completed(futures):
@@ -301,24 +325,31 @@ def download_and_rescore_pipeline(index_url, base_dir, target_games, max_gb, tra
                     logger.info(f"{'='*60}")
                     logger.info(f"--- ARCHIVE SUBMISSION TRACKED AND COMMITTED ---")
                     logger.info(f"Bundle Manifest Verified: {result['file_name']}")
-                    logger.info(f"Global Pool Metric: {state['total_games_extracted']}/{target_games} games | {current_gb:.2f}/{max_gb} GB")
-                    logger.info(f"Partition Matrix: Train({state['train_games_extracted']}) / Test({state['test_games_extracted']})")
+                    logger.info(f"Progress Matrix (Current/Target):")
+                    logger.info(f" -> TRAIN: {state['train_games_extracted']}/{target_train_games}")
+                    logger.info(f" -> TEST : {state['test_games_extracted']}/{target_test_games}")
+                    logger.info(f" -> DISK : {current_gb:.2f}/{max_gb} GB")
                     logger.info(f"{'='*60}")
                     
-                    if state["total_games_extracted"] >= target_games or state["total_bytes_extracted"] >= max_bytes:
-                        logger.info("Limits achieved. Executing structured task wind-down...")
+                    # Arrêt dès que les objectifs absolus pour Train ET Test sont atteints
+                    if state["train_games_extracted"] >= target_train_games and state["test_games_extracted"] >= target_test_games:
+                        logger.info("All specific targets fulfilled. Executing task wind-down...")
+                        abort_event.set()
+                    elif state["total_bytes_extracted"] >= max_bytes:
+                        logger.info("Storage limits hit. Triggering pipeline abort...")
                         abort_event.set()
 
     logger.info("[SUCCESS] Integrated Download & Rescore Pipeline Finished.")
 
 if __name__ == "__main__":
-    URL = "https://data.lczero.org/files/training_data/test91/"
+    URL = "https://data.lczero.org/files/training_data/test90/"
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
-    TARGET_GAMES = 100000000
-    MAX_DISK_SPACE_GB = 4000  
-    TRAIN_RATIO = 0.95
+    # 🌟 NOUVEAU SYSTÈME : Vous définissez les nombres absolus de parties voulues
+    TARGET_TRAIN_GAMES = 100000000    # Objectif : 90 Millions de parties d'entraînement
+    TARGET_TEST_GAMES  = 10000000    # Objectif : 10 Millions de parties de validation (Test)
     
+    MAX_DISK_SPACE_GB = 4000  
     CONCURRENT_ARCHIVES = 8
     
-    download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_GAMES, MAX_DISK_SPACE_GB, TRAIN_RATIO, CONCURRENT_ARCHIVES)
+    download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_TRAIN_GAMES, TARGET_TEST_GAMES, MAX_DISK_SPACE_GB, CONCURRENT_ARCHIVES)

@@ -35,7 +35,8 @@ import fnmatch
 from keras import backend as K
 import depthwise_utils as du
 
-def make_pattern_mask(pattern):
+def make_piece_pattern_mask(piece_type):
+    # Use -10000.0 instead of -1e9 to prevent NaN overflows in mixed float16 precision
     mask = np.zeros((64, 64), dtype=float)
     for i in range(64):
         r1, c1 = divmod(i, 8)
@@ -48,27 +49,33 @@ def make_pattern_mask(pattern):
             # A square should always be able to attend to itself
             if i == j:
                 valid = True
-            elif pattern == 'rook' and (dr == 0 or dc == 0):
+            elif piece_type == 'rook' and (dr == 0 or dc == 0):
                 valid = True
-            elif pattern == 'bishop' and (dr == dc):
+            elif piece_type == 'bishop' and (dr == dc):
                 valid = True
-            elif pattern == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+            elif piece_type == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
                 valid = True
-            elif pattern == 'queen' and (dr == 0 or dc == 0 or dr == dc):
+            elif piece_type == 'queen' and (dr == 0 or dc == 0 or dr == dc):
                 valid = True
-            elif pattern == 'king' and (dr <= 1 and dc <= 1):
+            elif piece_type == 'king' and (dr <= 1 and dc <= 1):
                 valid = True
-            elif pattern == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
+            elif piece_type == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
                 valid = True
-            elif pattern == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
-                valid = True
-            elif pattern == 'all' and ((dr == 0 or dc == 0 or dr == dc) or (dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+            elif piece_type == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
                 valid = True
                 
             if not valid:
                 mask[i, j] = -10000.0
     return mask
 
+def parse_block_string(block_str):
+    if not block_str: return []
+    tokens = re.findall(r'(\d*)([MTR])', block_str.upper())
+    blocks = []
+    for count, b_type in tokens:
+        count = int(count) if count else 1
+        blocks.extend([b_type] * count)
+    return blocks
 
 # @tf.custom_gradient
 # def gradient_checkpointed_matmul(x, kernel, bias):
@@ -381,81 +388,6 @@ class RPEValue(tf.keras.layers.Layer):
 
 
 
-class ParametricRoPE2D(tf.keras.layers.Layer):
-    def __init__(self, num_heads, head_depth, **kwargs):
-        super(ParametricRoPE2D, self).__init__(**kwargs)
-        self.num_heads = num_heads
-        self.head_depth = head_depth
-        
-    def build(self, input_shape):
-        d_axis = self.head_depth // 2
-        d_half = d_axis // 2
-        
-        # Base log-linear frequency initialization
-        base_freq = 1.0 / (10000 ** (tf.range(0, d_half, dtype=tf.float32) / d_half))
-        init_freq_tiled = tf.tile(tf.expand_dims(base_freq, 0), [self.num_heads, 1])
-        
-        # Enforce dtype=tf.float32 for initial variable allocation
-        self.freq_rank = self.add_weight(
-            name="freq_rank",
-            shape=[self.num_heads, d_half],
-            initializer=tf.constant_initializer(init_freq_tiled.numpy()),
-            dtype=tf.float32,
-            trainable=True
-        )
-        self.freq_file = self.add_weight(
-            name="freq_file",
-            shape=[self.num_heads, d_half],
-            initializer=tf.constant_initializer(init_freq_tiled.numpy()),
-            dtype=tf.float32,
-            trainable=True
-        )
-
-    def call(self, x):
-        d_axis = self.head_depth // 2
-        d_half = d_axis // 2
-
-        # 1. Split features into separate Rank and File components
-        x_rank = x[..., :d_axis]
-        x_file = x[..., d_axis:]
-
-        # 2. Create absolute board positions in strict float32
-        squares = tf.range(64, dtype=tf.float32)
-        ranks = tf.math.floordiv(squares, 8)  # Row coordinates [64]
-        files = tf.math.mod(squares, 8)       # Col coordinates [64]
-
-        # --- CRITICAL FIX: Explicitly upcast weights back to float32 ---
-        # This completely bypasses Keras's mixed_float16 layer auto-downcasting
-        freq_rank_f32 = tf.cast(self.freq_rank, tf.float32)
-        freq_file_f32 = tf.cast(self.freq_file, tf.float32)
-
-        # 3. Compute unique outer products per head using tf.einsum (Safely uniform float32)
-        raw_angles_rank = tf.einsum('r,hd->hrd', ranks, freq_rank_f32)
-        raw_angles_file = tf.einsum('c,hd->hcd', files, freq_file_f32)
-
-        # Replicate and expand to fill the full d_axis channel space
-        angles_rank = tf.concat([raw_angles_rank, raw_angles_rank], axis=-1)
-        angles_file = tf.concat([raw_angles_file, raw_angles_file], axis=-1)
-
-        # Compute wave functions in float32 to maintain grid resolution, then cast down to x.dtype (float16)
-        cos_rank = tf.reshape(tf.cast(tf.cos(angles_rank), x.dtype), [1, self.num_heads, 64, d_axis])
-        sin_rank = tf.reshape(tf.cast(tf.sin(angles_rank), x.dtype), [1, self.num_heads, 64, d_axis])
-        cos_file = tf.reshape(tf.cast(tf.cos(angles_file), x.dtype), [1, self.num_heads, 64, d_axis])
-        sin_file = tf.reshape(tf.cast(tf.sin(angles_file), x.dtype), [1, self.num_heads, 64, d_axis])
-
-        # Safe half-rotation block fully compatible with mixed precision compilers
-        def rotate_half(t):
-            t1 = t[..., :d_half]
-            t2 = t[..., d_half:]
-            return tf.concat([-t2, t1], axis=-1)
-
-        # 4. Execute head-specific spatial transformations in native float16
-        rot_rank = x_rank * cos_rank + rotate_half(x_rank) * sin_rank
-        rot_file = x_file * cos_file + rotate_half(x_file) * sin_file
-
-        # 5. Merge channels back to full head depth
-        return tf.concat([rot_rank, rot_file], axis=-1)
-
 
 
 
@@ -655,7 +587,8 @@ class TFProcess:
         self.use_rpe_q = self.cfg["model"].get("use_rpe_q", False)
         self.use_rpe_k = self.cfg["model"].get("use_rpe_k", False)
         self.use_rpe_v = self.cfg["model"].get("use_rpe_v", False)
-        self.use_rope = self.cfg["model"].get("use_rope", False)
+        
+
 
         self.use_logit_gating = self.cfg["model"].get("use_logit_gating", False)
         self.use_absolute_pe = self.cfg["model"].get("use_absolute_pe", False)
@@ -845,27 +778,6 @@ class TFProcess:
                                        trainable=False,
                                        dtype=tf.int64)
         # -----------------------------------------------
-        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
-        num_layers = self.encoder_blocks
-        
-        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
-        #smol_head_mask_np = np.ones((num_layers, 1, self.encoder_heads, 1, 1), dtype=float)
-
-        for rule in self.attention_masks_cfg:
-            pattern = rule['pattern']
-            heads = rule['heads']
-            #override = rule.get('override_smolgen', False)
-            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
-            
-            pattern_mask = make_pattern_mask(pattern)
-            for l in layers:
-                if l < num_layers:
-                    for h in heads:
-                        if h < self.encoder_heads:
-                            mha_mask_np[l, 0, h, :, :] = pattern_mask
-                            
-        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
-
 
         self.total_sublayers = 2.0 * self.encoder_blocks
 
@@ -2430,7 +2342,6 @@ class TFProcess:
         # (batch_size, num_heads, 64, depth)
         return tf.transpose(reshaped, perm=[0, 2, 1, 3])
 
-
     def scaled_dot_product_attention(self, q, k, v, name: str = None, inputs=None, layer_idx = 0):
 
         # 0 h 64 d, 0 h 64 d
@@ -2526,11 +2437,6 @@ class TFProcess:
         q = self.split_heads(q, batch_size, num_heads, head_depth)
         k = self.split_heads(k, batch_size, num_heads, head_depth)
         v = self.split_heads(v, batch_size, num_heads, head_depth)
-
-        if self.use_rope:
-            # Instantiating the layer inline during graph tracing works perfectly in Keras
-            q = ParametricRoPE2D(num_heads, head_depth, name=name+"/rope_q")(q)
-            k = ParametricRoPE2D(num_heads, head_depth, name=name+"/rope_k")(k)
 
         scaled_attention, attention_weights = self.scaled_dot_product_attention(
             q, k, v, name=name, inputs=inputs, layer_idx=layer_idx)
@@ -2850,8 +2756,18 @@ class TFProcess:
         flow = activation(flow)
         
         #flow = tf.reshape(flow, [-1, 8, 8, channels])
-        flow = du.FusedChessDepthwiseLayer(dff, mask[0], mask[1], mask[2],
-                                    name=name + "/2/conv2d")(flow)
+        flow = tf.reshape(flow, [-1, 8, 8, dff])
+        flow = du.ChessDepthwiseConv2D(mask, 
+                                 kernel_size=[kernel_size, kernel_size],
+                                 data_format='channels_last',
+                                 padding='same',
+                                 use_bias=False,
+                                 kernel_initializer='glorot_normal',
+                                 name = name + "/2/conv2d",
+                                 precision = self.model_dtype)(flow)
+
+        flow = tf.reshape(flow, [-1, 64, dff])
+
 
         #flow = tf.reshape(flow, [-1, 64, channels])
         
