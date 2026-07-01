@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=16            # Demandez plusieurs cœurs pour accélérer le rescoring
 #SBATCH --output=download.out
 #SBATCH --error=download.err
-
+#SBATCH --hint=nomultithread
 # On charge l'environnement Python si nécessaire
 module purge
 module load tensorflow-gpu/py3/2.16.1

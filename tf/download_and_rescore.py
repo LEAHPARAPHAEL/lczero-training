@@ -94,7 +94,6 @@ def save_state(state_file, state):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
-# --- Fonction exécutée en tâche de fond par chaque Processus individuel ---
 def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, train_ratio):
     file_path = os.path.join(base_dir, file_name)
     stats = {
@@ -103,7 +102,7 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
     }
 
     try:
-        # --- PHASE A : Téléchargement avec sécurité Rate-Limiting ---
+        # --- PHASE A : Téléchargement optimisé (Blocs de 1 Mo) ---
         logger.info(f"[{file_name}] Début du téléchargement distant...")
         import time
         max_retries = 5
@@ -121,7 +120,8 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     
                     r.raise_for_status()
                     with open(file_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=65536):
+                        # 🌟 OPTIMISATION 3 : Blocs de 1 Mo pour saturer le lien HPC
+                        for chunk in r.iter_content(chunk_size=1048576):
                             if chunk: f.write(chunk)
                     download_success = True
                     break
@@ -136,9 +136,11 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
 
         # --- PHASE B : Extraction & Rescoring ---
         with tarfile.open(file_path, 'r:*') as tar:
-            members = [m for m in tar.getmembers() if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))]
-            
-            for member in members:
+            # 🌟 OPTIMISATION 2 : Itération directe 'for member in tar' sans charger tout l'index
+            for member in tar:
+                if not (member.isfile() and (member.name.endswith('.gz') or member.name.endswith('.chunk'))):
+                    continue
+                
                 f_mem = tar.extractfile(member)
                 if f_mem is None: continue
                 
@@ -162,7 +164,7 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                 elif version == V6_VERSION:
                     try:
                         rescored_data = rescore_chunk_data(chunkdata)
-                        out_bytes = gzip.compress(rescored_data)
+                        out_bytes = gzip.compress(rescored_data, compresslevel=1)
                         stats["rescored"] += 1
                     except Exception:
                         stats["skipped"] += 1
@@ -178,7 +180,6 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     dest_dir = test_dir
                     stats["test_count"] += 1
 
-                # 🌟 SÉCURITÉ : Utilisation du PID du processus pour éviter la collision Errno 2
                 final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
                 tmp_output_path = final_output_path + f".{os.getpid()}.tmp"
                 
@@ -295,6 +296,6 @@ if __name__ == "__main__":
     TARGET_TRAIN_CHUNKS = 100000000    
     TARGET_TEST_CHUNKS  = 10000000      
     MAX_DISK_SPACE_GB = 4000  
-    CONCURRENT_ARCHIVES = 8            # Va utiliser 8 vrais cœurs physiques distincts
+    CONCURRENT_ARCHIVES = 16           # Va utiliser 8 vrais cœurs physiques distincts
     
     download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_TRAIN_CHUNKS, TARGET_TEST_CHUNKS, MAX_DISK_SPACE_GB, CONCURRENT_ARCHIVES)
