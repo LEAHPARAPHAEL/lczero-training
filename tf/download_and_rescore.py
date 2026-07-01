@@ -7,27 +7,21 @@ import struct
 import gzip
 import logging
 import tarfile
-import threading
 import requests
 import numpy as np
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
+from concurrent.futures import ProcessPoolExecutor, as_completed # 🌟 Utilisation de ProcessPoolExecutor
 
 # --- Configuration du Logging ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s', # Log le nom du processus
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
-# Signaux globaux de synchronisation
-abort_event = threading.Event()
-state_lock = threading.Lock()
-
-# --- Constantes Structurelles de Chunkparser (Strictement Identiques) ---
+# --- Constantes Structurelles (Strictement Identiques) ---
 V6_VERSION = struct.pack('i', 6)
 V7_VERSION = struct.pack('i', 7)
 V6_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffffffffffffIHH4H'
@@ -57,7 +51,6 @@ def apply_alpha(qs, alpha, alt_signs=True):
     return q_st
 
 def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
-    """Calcule le passage de V6 à V7 entièrement en mémoire RAM."""
     n_chunks = len(chunkdata) // V6_RECORD_SIZE
     qs, ds, play_idx = [], [], []
     
@@ -84,7 +77,6 @@ def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
         
     return bytes(cd_array)
 
-# --- Gestion de l'état d'avancement ---
 def load_state(state_file):
     if os.path.exists(state_file):
         with open(state_file, 'r') as f:
@@ -102,11 +94,8 @@ def save_state(state_file, state):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
-# --- Worker Process unique ---
+# --- Fonction exécutée en tâche de fond par chaque Processus individuel ---
 def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, train_ratio):
-    if abort_event.is_set():
-        return {"success": False, "reason": "Aborted before start", "file_name": file_name}
-
     file_path = os.path.join(base_dir, file_name)
     stats = {
         "file_name": file_name, "train_count": 0, "test_count": 0, 
@@ -114,51 +103,42 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
     }
 
     try:
-        logger.info(f"[{file_name}] Début du téléchargement...")
+        # --- PHASE A : Téléchargement avec sécurité Rate-Limiting ---
+        logger.info(f"[{file_name}] Début du téléchargement distant...")
+        import time
         max_retries = 5
         backoff_factor = 3
         download_success = False
 
         for attempt in range(max_retries):
-            if abort_event.is_set():
-                return {"success": False, "reason": "Aborted", "file_name": file_name}
-            
             try:
                 with requests.get(file_url, stream=True) as r:
                     if r.status_code == 429:
-                        # Si le serveur dit stop, on attend de plus en plus longtemps + un petit facteur aléatoire
                         sleep_time = (backoff_factor ** attempt) + random.random() * 2
-                        logger.warning(f"[{file_name}] Serveur saturé (429). Réessai {attempt+1}/{max_retries} après une pause de {sleep_time:.2f}s...")
+                        logger.warning(f"[{file_name}] Rate limit (429). Pause de {sleep_time:.2f}s...")
                         time.sleep(sleep_time)
                         continue
                     
                     r.raise_for_status()
                     with open(file_path, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=65536):
-                            if abort_event.is_set():
-                                return {"success": False, "reason": "Aborted during download", "file_name": file_name}
-                            if chunk:
-                                f.write(chunk)
+                            if chunk: f.write(chunk)
                     download_success = True
-                    break 
+                    break
             except Exception as download_err:
-                if attempt == max_retries - 1:
-                    raise download_err
+                if attempt == max_retries - 1: raise download_err
                 time.sleep(backoff_factor ** attempt)
 
         if not download_success:
-            raise Exception("Échec du téléchargement après plusieurs tentatives (Rate Limit).")
+            raise Exception("Échec de téléchargement (Rate limit persistant).")
 
-        logger.info(f"[{file_name}] Téléchargement terminé. Traitement en RAM...")
+        logger.info(f"[{file_name}] Téléchargement achevé. Extraction et rescoring matériel...")
 
         # --- PHASE B : Extraction & Rescoring ---
         with tarfile.open(file_path, 'r:*') as tar:
             members = [m for m in tar.getmembers() if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))]
             
             for member in members:
-                if abort_event.is_set():
-                    return {"success": False, "reason": "Aborted during extraction", "file_name": file_name}
-
                 f_mem = tar.extractfile(member)
                 if f_mem is None: continue
                 
@@ -198,9 +178,10 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     dest_dir = test_dir
                     stats["test_count"] += 1
 
-                # Protection atomique en écriture
+                # 🌟 SÉCURITÉ : Utilisation du PID du processus pour éviter la collision Errno 2
                 final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
-                tmp_output_path = final_output_path + f".{threading.get_ident()}.tmp"
+                tmp_output_path = final_output_path + f".{os.getpid()}.tmp"
+                
                 with open(tmp_output_path, 'wb') as out_f:
                     out_f.write(out_bytes)
                 os.replace(tmp_output_path, final_output_path)
@@ -208,10 +189,9 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                 stats["bytes"] += len(out_bytes)
 
         stats["success"] = True
-        logger.info(f"[{file_name}] Terminé! Rescored: {stats['rescored']} | V7 d'origine: {stats['already_v7']}")
 
     except Exception as e:
-        logger.error(f"[{file_name}] Le worker a échoué : {e}")
+        logger.error(f"[{file_name}] Le processus a échoué : {e}")
         stats["success"] = False
     finally:
         if os.path.exists(file_path):
@@ -220,7 +200,6 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
     return stats
 
 
-# --- Chef d'orchestre principal ---
 def download_and_rescore_pipeline(index_url, base_dir, target_train_chunks, target_test_chunks, max_gb, concurrent_archives=4):
     base_dir = os.path.expanduser(base_dir)
     train_dir = os.path.join(base_dir, "train")
@@ -233,23 +212,20 @@ def download_and_rescore_pipeline(index_url, base_dir, target_train_chunks, targ
     state_file = os.path.join(base_dir, "resume_state.json")
     state = load_state(state_file)
 
-    # 🌟 CALCUL UNIQUE DU RATIO AU DÉMARRAGE
     total_target_chunks = target_train_chunks + target_test_chunks
     calculated_train_ratio = target_train_chunks / total_target_chunks
 
-    logger.info(f"Ratio calculé une fois pour toutes : {calculated_train_ratio*100:.2f}% Train / {(1-calculated_train_ratio)*100:.2f}% Test")
-    logger.info(f"Progression actuelle du disque : {state['total_games_extracted']}/{total_target_chunks} chunks traités.")
+    logger.info(f"Ratio d'affectation : {calculated_train_ratio*100:.2f}% Train")
     
     if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
-        logger.info("Objectif global de chunks déjà atteint. Fin de session.")
+        logger.info("Objectifs déjà atteints.")
         return
 
-    logger.info(f"Scan du serveur d'index : {index_url}")
     try:
         response = requests.get(index_url)
         response.raise_for_status()
     except Exception as e:
-        logger.error(f"Impossible de joindre le serveur d'index : {e}")
+        logger.error(f"Erreur d'accès à l'index : {e}")
         return
 
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -263,69 +239,62 @@ def download_and_rescore_pipeline(index_url, base_dir, target_train_chunks, targ
     pending_archives = [f for f in file_links if f not in state["processed_archives"]]
 
     if not pending_archives:
-        logger.warning("Aucune nouvelle archive trouvée à traiter.")
+        logger.warning("Aucune archive en attente.")
         return
 
-    # 🌟 CHRONOLOGIE INVERSÉE : On trie par ordre alphabétique standard puis on inverse
-    # Cela permet de piocher les plus hauts numéros de chunks (les jeux les plus récents) en premier
-    logger.info("Tri de la file d'attente en chronologie inversée (Jeux récents d'abord)...")
     pending_archives.sort()
     pending_archives.reverse()
 
-    logger.info(f"Démarrage du pool avec {concurrent_archives} téléchargements simultanés.")
+    logger.info(f"Démarrage de la parallélisation par Processus (Max cœurs simultanés : {concurrent_archives})")
 
-    with ThreadPoolExecutor(max_workers=concurrent_archives) as executor:
+    # 🌟 CHANGEMENT MAJEUR : Utilisation de ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=concurrent_archives) as executor:
         futures = []
         for file_name in pending_archives:
-            with state_lock:
-                if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
-                    abort_event.set()
-                    break
-                    
+            if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
+                break
+                
             file_url = urljoin(index_url, file_name)
             clean_name = os.path.basename(urlparse(file_url).path)
             
-            # On passe le ratio fixe calculé une fois au démarrage à tous les threads
             futures.append(executor.submit(
                 process_single_archive, file_url, clean_name, base_dir, 
                 train_dir, test_dir, calculated_train_ratio
             ))
 
+        # La gestion de l'état se fait séquentiellement dans le thread principal, aucun lock requis
         for future in as_completed(futures):
             result = future.result()
             
             if result["success"]:
-                with state_lock:
-                    state["train_games_extracted"] += result["train_count"]
-                    state["test_games_extracted"] += result["test_count"]
-                    state["total_games_extracted"] += (result["train_count"] + result["test_count"])
-                    state["total_bytes_extracted"] += result["bytes"]
-                    state["processed_archives"].append(result["file_name"])
-                    
-                    save_state(state_file, state)
-                    
-                    current_gb = state["total_bytes_extracted"] / (1024**3)
-                    logger.info(f"{'='*60}")
-                    logger.info(f"ARCHIVE VALIDÉE ET COMMISE : {result['file_name']}")
-                    logger.info(f"Etat global : {state['total_games_extracted']}/{total_target_chunks} chunks de données au total.")
-                    logger.info(f"Détails : Train={state['train_games_extracted']} | Test={state['test_games_extracted']} | Espace={current_gb:.2f} GB")
-                    logger.info(f"{'='*60}")
-                    
-                    if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
-                        logger.info("Objectif global de chunks atteint! Fermeture propre du pool...")
-                        abort_event.set()
+                state["train_games_extracted"] += result["train_count"]
+                state["test_games_extracted"] += result["test_count"]
+                state["total_games_extracted"] += (result["train_count"] + result["test_count"])
+                state["total_bytes_extracted"] += result["bytes"]
+                state["processed_archives"].append(result["file_name"])
+                
+                save_state(state_file, state)
+                
+                current_gb = state["total_bytes_extracted"] / (1024**3)
+                logger.info(f"{'='*60}")
+                logger.info(f"ARCHIVE VALIDÉE ET ENREGISTRÉE : {result['file_name']}")
+                logger.info(f"Progression : {state['total_games_extracted']}/{total_target_chunks} chunks")
+                logger.info(f"Détails : Train={state['train_games_extracted']} | Test={state['test_games_extracted']} | Volume={current_gb:.2f} GB")
+                logger.info(f"{'='*60}")
+                
+                if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
+                    logger.info("Quotas atteints. Fermeture du pool.")
+                    break
 
-    logger.info("Session terminée avec succès.")
+    logger.info("Fin de session.")
 
-# --- Point d'entrée de votre script Slurm ---
 if __name__ == "__main__":
     URL = "https://data.lczero.org/files/training_data/test80/"
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
-    TARGET_TRAIN_CHUNKS = 100000000    # Votre cible d'entraînement
-    TARGET_TEST_CHUNKS  = 10000000      # Votre cible de validation (Test)
-    
+    TARGET_TRAIN_CHUNKS = 100000000    
+    TARGET_TEST_CHUNKS  = 10000000      
     MAX_DISK_SPACE_GB = 4000  
-    CONCURRENT_ARCHIVES = 8            # Harmonisé avec vos 16 cœurs Slurm
+    CONCURRENT_ARCHIVES = 8            # Va utiliser 8 vrais cœurs physiques distincts
     
     download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_TRAIN_CHUNKS, TARGET_TEST_CHUNKS, MAX_DISK_SPACE_GB, CONCURRENT_ARCHIVES)
