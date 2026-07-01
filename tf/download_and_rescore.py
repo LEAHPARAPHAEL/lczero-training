@@ -175,7 +175,7 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
 
                 # Protection atomique en écriture
                 final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
-                tmp_output_path = final_output_path + ".tmp"
+                tmp_output_path = final_output_path + f".{threading.get_ident()}.tmp"
                 with open(tmp_output_path, 'wb') as out_f:
                     out_f.write(out_bytes)
                 os.replace(tmp_output_path, final_output_path)
