@@ -13,6 +13,7 @@ import numpy as np
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 # --- Configuration du Logging ---
 logging.basicConfig(
@@ -113,17 +114,41 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
     }
 
     try:
-        # --- PHASE A : Téléchargement ---
         logger.info(f"[{file_name}] Début du téléchargement...")
-        with requests.get(file_url, stream=True) as r:
-            r.raise_for_status()
-            with open(file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=65536):
-                    if abort_event.is_set():
-                        return {"success": False, "reason": "Aborted during download", "file_name": file_name}
-                    if chunk:
-                        f.write(chunk)
-                                
+        max_retries = 5
+        backoff_factor = 3
+        download_success = False
+
+        for attempt in range(max_retries):
+            if abort_event.is_set():
+                return {"success": False, "reason": "Aborted", "file_name": file_name}
+            
+            try:
+                with requests.get(file_url, stream=True) as r:
+                    if r.status_code == 429:
+                        # Si le serveur dit stop, on attend de plus en plus longtemps + un petit facteur aléatoire
+                        sleep_time = (backoff_factor ** attempt) + random.random() * 2
+                        logger.warning(f"[{file_name}] Serveur saturé (429). Réessai {attempt+1}/{max_retries} après une pause de {sleep_time:.2f}s...")
+                        time.sleep(sleep_time)
+                        continue
+                    
+                    r.raise_for_status()
+                    with open(file_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if abort_event.is_set():
+                                return {"success": False, "reason": "Aborted during download", "file_name": file_name}
+                            if chunk:
+                                f.write(chunk)
+                    download_success = True
+                    break 
+            except Exception as download_err:
+                if attempt == max_retries - 1:
+                    raise download_err
+                time.sleep(backoff_factor ** attempt)
+
+        if not download_success:
+            raise Exception("Échec du téléchargement après plusieurs tentatives (Rate Limit).")
+
         logger.info(f"[{file_name}] Téléchargement terminé. Traitement en RAM...")
 
         # --- PHASE B : Extraction & Rescoring ---
