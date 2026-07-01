@@ -298,7 +298,7 @@ if __name__ == "__main__":
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
     TARGET_TRAIN_CHUNKS = 100000000    # Votre cible d'entraînement
-    TARGET_TEST_CHUNKS  = 1000000      # Votre cible de validation (Test)
+    TARGET_TEST_CHUNKS  = 10000000      # Votre cible de validation (Test)
     
     MAX_DISK_SPACE_GB = 4000  
     CONCURRENT_ARCHIVES = 8            # Harmonisé avec vos 16 cœurs Slurm
