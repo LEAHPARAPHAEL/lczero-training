@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- Set up HPC-friendly Logging ---
+# --- Configuration du Logging ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
@@ -22,11 +22,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global signals for thread synchronization
+# Signaux globaux de synchronisation
 abort_event = threading.Event()
 state_lock = threading.Lock()
 
-# --- Structural Constants from Chunkparser ---
+# --- Constantes Structurelles de Chunkparser (Strictement Identiques) ---
 V6_VERSION = struct.pack('i', 6)
 V7_VERSION = struct.pack('i', 7)
 V6_STRUCT_STRING = '4si7432s832sBBBBBBBbfffffffffffffffIHH4H'
@@ -37,6 +37,7 @@ v7_struct = struct.Struct(V7_STRUCT_STRING)
 V6_RECORD_SIZE = v6_struct.size
 V7_RECORD_SIZE = v7_struct.size
 
+# --- Outils de Rescoring Mathématique (Strictement Identiques) ---
 def apply_alpha(qs, alpha, alt_signs=True):
     if not isinstance(qs, np.ndarray):
         qs = np.array(qs)
@@ -55,7 +56,7 @@ def apply_alpha(qs, alpha, alt_signs=True):
     return q_st
 
 def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
-    """Processes uncompressed chunk data from V6 to V7 in memory."""
+    """Calcule le passage de V6 à V7 entièrement en mémoire RAM."""
     n_chunks = len(chunkdata) // V6_RECORD_SIZE
     qs, ds, play_idx = [], [], []
     
@@ -82,6 +83,7 @@ def rescore_chunk_data(chunkdata, st_alpha=1-1/6):
         
     return bytes(cd_array)
 
+# --- Gestion de l'état d'avancement ---
 def load_state(state_file):
     if os.path.exists(state_file):
         with open(state_file, 'r') as f:
@@ -93,37 +95,26 @@ def load_state(state_file):
                 "total_bytes_extracted": state.get("total_bytes_extracted", 0),
                 "processed_archives": state.get("processed_archives", [])
             }
-    return {
-        "total_games_extracted": 0,
-        "train_games_extracted": 0,
-        "test_games_extracted": 0,
-        "total_bytes_extracted": 0,
-        "processed_archives": []
-    }
+    return {"total_games_extracted": 0, "train_games_extracted": 0, "test_games_extracted": 0, "total_bytes_extracted": 0, "processed_archives": []}
 
 def save_state(state_file, state):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=4)
 
+# --- Worker Process unique ---
 def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, train_ratio):
     if abort_event.is_set():
         return {"success": False, "reason": "Aborted before start", "file_name": file_name}
 
     file_path = os.path.join(base_dir, file_name)
     stats = {
-        "file_name": file_name,
-        "train_count": 0, 
-        "test_count": 0, 
-        "bytes": 0, 
-        "success": False,
-        "rescored": 0,
-        "already_v7": 0,
-        "skipped": 0
+        "file_name": file_name, "train_count": 0, "test_count": 0, 
+        "bytes": 0, "success": False, "rescored": 0, "already_v7": 0, "skipped": 0
     }
 
     try:
-        # --- PHASE A: Stream Download ---
-        logger.info(f"[{file_name}] Starting download...")
+        # --- PHASE A : Téléchargement ---
+        logger.info(f"[{file_name}] Début du téléchargement...")
         with requests.get(file_url, stream=True) as r:
             r.raise_for_status()
             with open(file_path, 'wb') as f:
@@ -133,32 +124,23 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     if chunk:
                         f.write(chunk)
                                 
-        logger.info(f"[{file_name}] Download complete. Processing elements entirely in RAM...")
+        logger.info(f"[{file_name}] Téléchargement terminé. Traitement en RAM...")
 
-        # --- PHASE B: Extract, Rescore, and Route in Memory ---
-        if abort_event.is_set(): 
-            return {"success": False, "reason": "Aborted before processing", "file_name": file_name}
-            
+        # --- PHASE B : Extraction & Rescoring ---
         with tarfile.open(file_path, 'r:*') as tar:
-            members = [
-                m for m in tar.getmembers() 
-                if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))
-            ]
+            members = [m for m in tar.getmembers() if m.isfile() and (m.name.endswith('.gz') or m.name.endswith('.chunk'))]
             
             for member in members:
                 if abort_event.is_set():
                     return {"success": False, "reason": "Aborted during extraction", "file_name": file_name}
 
                 f_mem = tar.extractfile(member)
-                if f_mem is None:
-                    continue
+                if f_mem is None: continue
                 
                 compressed_payload = f_mem.read()
-                
                 try:
                     chunkdata = gzip.decompress(compressed_payload)
-                except Exception as decompress_err:
-                    logger.error(f"[{file_name}] Decompression failed for sub-file {member.name}: {decompress_err}")
+                except Exception:
                     stats["skipped"] += 1
                     continue
 
@@ -177,8 +159,7 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                         rescored_data = rescore_chunk_data(chunkdata)
                         out_bytes = gzip.compress(rescored_data)
                         stats["rescored"] += 1
-                    except Exception as rescore_err:
-                        logger.error(f"[{file_name}] Mathematical rescoring failed on {member.name}: {rescore_err}")
+                    except Exception:
                         stats["skipped"] += 1
                         continue
                 else:
@@ -192,9 +173,9 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                     dest_dir = test_dir
                     stats["test_count"] += 1
 
+                # Protection atomique en écriture
                 final_output_path = os.path.join(dest_dir, os.path.basename(member.name))
                 tmp_output_path = final_output_path + ".tmp"
-                
                 with open(tmp_output_path, 'wb') as out_f:
                     out_f.write(out_bytes)
                 os.replace(tmp_output_path, final_output_path)
@@ -202,20 +183,20 @@ def process_single_archive(file_url, file_name, base_dir, train_dir, test_dir, t
                 stats["bytes"] += len(out_bytes)
 
         stats["success"] = True
-        logger.info(f"[{file_name}] Finished! Rescored: {stats['rescored']} | Confirmed V7: {stats['already_v7']} | Skipped: {stats['skipped']}")
+        logger.info(f"[{file_name}] Terminé! Rescored: {stats['rescored']} | V7 d'origine: {stats['already_v7']}")
 
     except Exception as e:
-        logger.error(f"[{file_name}] Core worker failed with error: {e}")
+        logger.error(f"[{file_name}] Le worker a échoué : {e}")
         stats["success"] = False
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
-            logger.info(f"[{file_name}] Cleared temporary tar archive from scratch.")
             
     return stats
 
 
-def download_and_rescore_pipeline(index_url, base_dir, target_train_games, target_test_games, max_gb, concurrent_archives=4):
+# --- Chef d'orchestre principal ---
+def download_and_rescore_pipeline(index_url, base_dir, target_train_chunks, target_test_chunks, max_gb, concurrent_archives=4):
     base_dir = os.path.expanduser(base_dir)
     train_dir = os.path.join(base_dir, "train")
     test_dir = os.path.join(base_dir, "test")
@@ -227,24 +208,23 @@ def download_and_rescore_pipeline(index_url, base_dir, target_train_games, targe
     state_file = os.path.join(base_dir, "resume_state.json")
     state = load_state(state_file)
 
-    logger.info(f"Base Destination: {base_dir}")
-    logger.info(f"Resuming pipeline: Current Train = {state['train_games_extracted']}/{target_train_games} | Current Test = {state['test_games_extracted']}/{target_test_games}")
-    logger.info(f"Storage allocated: {state['total_bytes_extracted'] / (1024**3):.2f} GB / {max_gb} GB used.")
+    # 🌟 CALCUL UNIQUE DU RATIO AU DÉMARRAGE
+    total_target_chunks = target_train_chunks + target_test_chunks
+    calculated_train_ratio = target_train_chunks / total_target_chunks
+
+    logger.info(f"Ratio calculé une fois pour toutes : {calculated_train_ratio*100:.2f}% Train / {(1-calculated_train_ratio)*100:.2f}% Test")
+    logger.info(f"Progression actuelle du disque : {state['total_games_extracted']}/{total_target_chunks} chunks traités.")
     
-    # Vérification d'arrêt basée sur la complétion des DEUX dossiers cibles
-    if state["train_games_extracted"] >= target_train_games and state["test_games_extracted"] >= target_test_games:
-        logger.info("Both specific training and testing target counts are already satisfied! Exiting.")
-        return
-    if state["total_bytes_extracted"] >= max_bytes:
-        logger.info("Disk space limit reached. Exiting.")
+    if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
+        logger.info("Objectif global de chunks déjà atteint. Fin de session.")
         return
 
-    logger.info(f"Scanning online directory structure: {index_url}")
+    logger.info(f"Scan du serveur d'index : {index_url}")
     try:
         response = requests.get(index_url)
         response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch resource index: {e}")
+    except Exception as e:
+        logger.error(f"Impossible de joindre le serveur d'index : {e}")
         return
 
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -258,54 +238,32 @@ def download_and_rescore_pipeline(index_url, base_dir, target_train_games, targe
     pending_archives = [f for f in file_links if f not in state["processed_archives"]]
 
     if not pending_archives:
-        logger.warning("No new online data bundles found to process.")
+        logger.warning("Aucune nouvelle archive trouvée à traiter.")
         return
 
-    # Calcul du ratio cible idéal final à partir de vos volumes demandés
-    total_target = target_train_games + target_test_games
-    nominal_train_ratio = target_train_games / total_target
-    target_test_proportion = target_test_games / total_target
+    # 🌟 CHRONOLOGIE INVERSÉE : On trie par ordre alphabétique standard puis on inverse
+    # Cela permet de piocher les plus hauts numéros de chunks (les jeux les plus récents) en premier
+    logger.info("Tri de la file d'attente en chronologie inversée (Jeux récents d'abord)...")
+    pending_archives.sort()
+    pending_archives.reverse()
 
-    logger.info(f"Nominal target split: {nominal_train_ratio*100:%} Train / {target_test_proportion*100:%} Test")
-    logger.info(f"Saturating pipeline with {len(pending_archives)} pending archives.")
+    logger.info(f"Démarrage du pool avec {concurrent_archives} téléchargements simultanés.")
 
     with ThreadPoolExecutor(max_workers=concurrent_archives) as executor:
         futures = []
         for file_name in pending_archives:
             with state_lock:
-                # Vérification dynamique des quotas restants
-                rem_train = max(0, target_train_games - state["train_games_extracted"])
-                rem_test = max(0, target_test_games - state["test_games_extracted"])
-                
-                if (rem_train == 0 and rem_test == 0) or state["total_bytes_extracted"] >= max_bytes:
+                if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
                     abort_event.set()
                     break
-
-                current_total_games = state["train_games_extracted"] + state["test_games_extracted"]
-                
-                if rem_train == 0:
-                    archive_ratio = 0.0  # Plus besoin de jeux d'entraînement, on envoie tout à TEST
-                elif rem_test == 0:
-                    archive_ratio = 1.0  # Plus besoin de jeux de test, on envoie tout à TRAIN
-                else:
-                    # Calcul de la proportion réelle de test actuelle sur le disque
-                    current_test_prop = state["test_games_extracted"] / current_total_games if current_total_games > 0 else target_test_proportion
-                    
-                    if current_test_prop < target_test_proportion:
-                        # 🚨 CATCH-UP SÉCURISÉ : Le dossier test est en retard ! 
-                        # On force le ratio à 0.0 pour injecter 100% de cette archive dans TEST
-                        archive_ratio = 0.0
-                        logger.warning(f"-> Test deficit detected ({current_test_prop*100:.2f}% < {target_test_proportion*100:.2f}%). Forcing ALL elements of next bundle to TEST set.")
-                    else:
-                        # Situation nominale équilibrée, on applique le ratio de base
-                        archive_ratio = nominal_train_ratio
                     
             file_url = urljoin(index_url, file_name)
             clean_name = os.path.basename(urlparse(file_url).path)
             
+            # On passe le ratio fixe calculé une fois au démarrage à tous les threads
             futures.append(executor.submit(
                 process_single_archive, file_url, clean_name, base_dir, 
-                train_dir, test_dir, archive_ratio
+                train_dir, test_dir, calculated_train_ratio
             ))
 
         for future in as_completed(futures):
@@ -323,33 +281,26 @@ def download_and_rescore_pipeline(index_url, base_dir, target_train_games, targe
                     
                     current_gb = state["total_bytes_extracted"] / (1024**3)
                     logger.info(f"{'='*60}")
-                    logger.info(f"--- ARCHIVE SUBMISSION TRACKED AND COMMITTED ---")
-                    logger.info(f"Bundle Manifest Verified: {result['file_name']}")
-                    logger.info(f"Progress Matrix (Current/Target):")
-                    logger.info(f" -> TRAIN: {state['train_games_extracted']}/{target_train_games}")
-                    logger.info(f" -> TEST : {state['test_games_extracted']}/{target_test_games}")
-                    logger.info(f" -> DISK : {current_gb:.2f}/{max_gb} GB")
+                    logger.info(f"ARCHIVE VALIDÉE ET COMMISE : {result['file_name']}")
+                    logger.info(f"Etat global : {state['total_games_extracted']}/{total_target_chunks} chunks de données au total.")
+                    logger.info(f"Détails : Train={state['train_games_extracted']} | Test={state['test_games_extracted']} | Espace={current_gb:.2f} GB")
                     logger.info(f"{'='*60}")
                     
-                    # Arrêt dès que les objectifs absolus pour Train ET Test sont atteints
-                    if state["train_games_extracted"] >= target_train_games and state["test_games_extracted"] >= target_test_games:
-                        logger.info("All specific targets fulfilled. Executing task wind-down...")
-                        abort_event.set()
-                    elif state["total_bytes_extracted"] >= max_bytes:
-                        logger.info("Storage limits hit. Triggering pipeline abort...")
+                    if state["total_games_extracted"] >= total_target_chunks or state["total_bytes_extracted"] >= max_bytes:
+                        logger.info("Objectif global de chunks atteint! Fermeture propre du pool...")
                         abort_event.set()
 
-    logger.info("[SUCCESS] Integrated Download & Rescore Pipeline Finished.")
+    logger.info("Session terminée avec succès.")
 
+# --- Point d'entrée de votre script Slurm ---
 if __name__ == "__main__":
-    URL = "https://data.lczero.org/files/training_data/test90/"
+    URL = "https://data.lczero.org/files/training_data/test80/"
     DESTINATION_FOLDER = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data"
     
-    # 🌟 NOUVEAU SYSTÈME : Vous définissez les nombres absolus de parties voulues
-    TARGET_TRAIN_GAMES = 100000000    # Objectif : 90 Millions de parties d'entraînement
-    TARGET_TEST_GAMES  = 10000000    # Objectif : 10 Millions de parties de validation (Test)
+    TARGET_TRAIN_CHUNKS = 100000000    # Votre cible d'entraînement
+    TARGET_TEST_CHUNKS  = 1000000      # Votre cible de validation (Test)
     
     MAX_DISK_SPACE_GB = 4000  
-    CONCURRENT_ARCHIVES = 8
+    CONCURRENT_ARCHIVES = 8            # Harmonisé avec vos 16 cœurs Slurm
     
-    download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_TRAIN_GAMES, TARGET_TEST_GAMES, MAX_DISK_SPACE_GB, CONCURRENT_ARCHIVES)
+    download_and_rescore_pipeline(URL, DESTINATION_FOLDER, TARGET_TRAIN_CHUNKS, TARGET_TEST_CHUNKS, MAX_DISK_SPACE_GB, CONCURRENT_ARCHIVES)

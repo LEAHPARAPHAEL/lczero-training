@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-mask"
+name: "Tx8-rope-smolgen"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -97,16 +97,17 @@ model:
     input_type: "classic"
 
     # smolgen: more efficient version of fullgen, adds a lot of params
-    use_smolgen: false
+    use_smolgen: true
     smolgen_hidden_channels: 8
     smolgen_hidden_sz: 64
     smolgen_gen_sz: 64
     smolgen_activation: "swish"
 
     # RPE
-    use_rpe_q: true
-    use_rpe_k: true
+    use_rpe_q: false
+    use_rpe_k: false
     use_rpe_v: false
+    use_rope: true
 
     # Gating
     use_logit_gating: false
@@ -132,16 +133,3 @@ model:
 
     blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
 
-    attention_masks:
-      - pattern: "color"
-        heads: [0]
-        layers: 'all'
-      - pattern: "rook"
-        heads: [1]
-        layers: 'all'
-      - pattern: "bishop"
-        heads: [2]
-        layers: 'all' 
-      - pattern: "knight"
-        heads: [3]
-        layers: 'all' 

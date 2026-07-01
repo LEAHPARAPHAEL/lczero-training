@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-mask"
+name: "Tx8-rope-mask"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -104,9 +104,10 @@ model:
     smolgen_activation: "swish"
 
     # RPE
-    use_rpe_q: true
-    use_rpe_k: true
+    use_rpe_q: false
+    use_rpe_k: false
     use_rpe_v: false
+    use_rope: true
 
     # Gating
     use_logit_gating: false
@@ -145,3 +146,5 @@ model:
       - pattern: "knight"
         heads: [3]
         layers: 'all' 
+
+

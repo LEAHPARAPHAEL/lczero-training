@@ -2430,6 +2430,55 @@ class TFProcess:
         # (batch_size, num_heads, 64, depth)
         return tf.transpose(reshaped, perm=[0, 2, 1, 3])
 
+    def apply_2d_rope(self, x):
+        """
+        Applies a 2D Rotary Position Embedding to a split-head attention tensor.
+        Input shape: (batch_size, num_heads, 64, head_depth)
+        """
+        head_depth = x.shape[-1]
+        d_axis = head_depth // 2
+        assert head_depth % 4 == 0, "head_depth must be a multiple of 4 for 2D RoPE split!"
+
+        # 1. Split features into Rank components and File components
+        x_rank = x[..., :d_axis]
+        x_file = x[..., d_axis:]
+
+        # 2. Build 2D grid coordinates for the 64 chess squares
+        squares = tf.range(64, dtype=tf.float32)
+        ranks = tf.math.floordiv(squares, 8)  # Row coordinate (0 to 7)
+        files = tf.math.mod(squares, 8)       # Col coordinate (0 to 7)
+
+        # 3. Compute sinusoidal frequencies for half of the axis dimension
+        d_half = d_axis // 2
+        inv_freq = 1.0 / (10000 ** (tf.range(0, d_half, dtype=tf.float32) / d_half))
+        
+        # 4. Generate outer products to calculate angles per square
+        raw_angles_rank = tf.einsum('i,j->ij', ranks, inv_freq)
+        raw_angles_file = tf.einsum('i,j->ij', files, inv_freq)
+
+        # Concat the angles cleanly to match the full d_axis size [64, d_axis]
+        angles_rank = tf.concat([raw_angles_rank, raw_angles_rank], axis=-1)
+        angles_file = tf.concat([raw_angles_file, raw_angles_file], axis=-1)
+
+        # Match precision of input tensor (FP32 or FP16 matching model selection)
+        cos_rank = tf.reshape(tf.cast(tf.cos(angles_rank), x.dtype), [1, 1, 64, d_axis])
+        sin_rank = tf.reshape(tf.cast(tf.sin(angles_rank), x.dtype), [1, 1, 64, d_axis])
+        cos_file = tf.reshape(tf.cast(tf.cos(angles_file), x.dtype), [1, 1, 64, d_axis])
+        sin_file = tf.reshape(tf.cast(tf.sin(angles_file), x.dtype), [1, 1, 64, d_axis])
+
+        # Ultra-safe rotate_half implementation that bypasses dynamic reshape operations
+        def rotate_half(t):
+            t1 = t[..., :d_half]
+            t2 = t[..., d_half:]
+            return tf.concat([-t2, t1], axis=-1)
+
+        # 5. Apply the standard rotary formula to both spatial streams
+        rot_rank = x_rank * cos_rank + rotate_half(x_rank) * sin_rank
+        rot_file = x_file * cos_file + rotate_half(x_file) * sin_file
+
+        # 6. Merge back to full head depth
+        return tf.concat([rot_rank, rot_file], axis=-1)
+
 
     def scaled_dot_product_attention(self, q, k, v, name: str = None, inputs=None, layer_idx = 0):
 
@@ -3243,7 +3292,8 @@ class TFProcess:
             flow, block_attn, block_acts = self.encoder_layer(
                 flow, self.embedding_size, self.encoder_d_model,
                 self.encoder_heads, self.encoder_dff, block_type, mask, kernel_size,
-                name=name + "_encoder", training=training, layer_idx=block_idx)
+                name=name + "_encoder", training=training, layer_idx=self.encoder_count)
+            self.encoder_count += 1
 
         return flow, block_attn, block_acts
 
@@ -3259,6 +3309,7 @@ class TFProcess:
         attn_wts = []
         activations = {}
         self._depthwise_count = 0 
+        self.encoder_count = 0
         
         for block_idx, block_type in enumerate(self.blocks):
             block_name = f"block_{block_idx}"
