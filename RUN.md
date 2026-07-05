@@ -41,3 +41,10 @@ echo $WORK
 
 
 sbatch --job-name=lustre_purge --time=03:00:00 --ntasks=1 --cpus-per-task=1 --wrap="find -P data_to_delete \( -type f -o -type l \) -delete && find -P data_to_delete -type d -empty -delete" --partition=prepost --account=kwf@v100
+
+
+# Local -> Jean-Zay
+rsync -avzP leela/ jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/
+
+# Jean-Zay -> Local
+rsync -avzP jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/networks/resTnet/resTnet-100000.pb.gz /home/raph/leela/networks/resTnet/

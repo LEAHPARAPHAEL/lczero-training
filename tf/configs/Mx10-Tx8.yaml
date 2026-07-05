@@ -1,11 +1,11 @@
 %YAML 1.2
 --- 
 name: "Mx10-Tx8"
-gpu: all
+gpu: 0
 dataset:
   num_chunks: 500_000_000
   allow_less_chunks: true
-  train_ratio: 0.95
+  train_ratio: 0.909
   sort_type: name
   input_train: 
     - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/training*/'
@@ -35,7 +35,7 @@ training:
     checkpoint_activations: false
     #num_test_positions : 50_000
     train_avg_report_steps: 1_000
-    total_steps: 100_000
+    total_steps: 500_000
     checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000

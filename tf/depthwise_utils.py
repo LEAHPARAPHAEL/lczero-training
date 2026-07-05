@@ -623,7 +623,75 @@ class FusedChessDepthwiseLayer(tf.keras.layers.Layer):
         return [self.rook_channels, self.bishop_channels, self.knight_channels]
 
 
+_depthwise_x_module = tf.load_op_library('./custom_ops/depthwise_x.so')
 
+depthwise_x = _depthwise_x_module.depthwise_x
+depthwise_x_grad = _depthwise_x_module.depthwise_x_grad
+
+@ops.RegisterGradient("DepthwiseX")
+def _depthwise_x_grad(op, d_out):
+    input_tensor = op.inputs[0]
+    weights_tensor = op.inputs[1]
+    recomb_tensor = op.inputs[2]
+    biases_tensor = op.inputs[3]
+    
+    d_in, d_w, d_r, d_b = depthwise_x_grad(
+        d_out, input_tensor, weights_tensor, recomb_tensor, biases_tensor
+    )
+    return d_in, d_w, d_r, d_b
+
+class DepthwiseXLayer(tf.keras.layers.Layer):
+    def __init__(self, channels, name=None, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.channels = channels
+
+    def build(self, input_shape):
+        self.channels = input_shape[-1]
+        
+        # 27 spatial weights per channel (9 Rook + 9 Bishop + 9 Knight)
+        self.depthwise_kernel = self.add_weight(
+            shape=(27, self.channels),
+            initializer='glorot_normal',
+            trainable=True,
+            name='depthwise_kernel'
+        )
+        
+        # Space-Invariant GLU Layer Array: Exactly 6 mixing parameters per channel dimension
+        self.recomb_grid = self.add_weight(
+            shape=(6, self.channels),
+            initializer='glorot_normal',
+            trainable=True,
+            name='recomb_grid'
+        )
+        
+        self.bias = self.add_weight(
+            shape=(self.channels,),
+            initializer='zeros',
+            trainable=True,
+            name='bias'
+        )
+        
+        super().build(input_shape)
+
+    def call(self, inputs):
+        x_fp16 = tf.cast(inputs, tf.float16)
+        w_fp16 = tf.cast(self.depthwise_kernel, tf.float16)
+        r_fp16 = tf.cast(self.recomb_grid, tf.float16)
+        b_fp16 = tf.cast(self.bias, tf.float16)
+        
+        output = depthwise_x(x_fp16, w_fp16, r_fp16, b_fp16)
+        return tf.cast(output, inputs.dtype)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "channels": self.channels
+        })
+        return config
+
+    def get_mask_descriptor(self):
+        return None
+'''
 _depthwise_x_module = tf.load_op_library('./custom_ops/depthwise_x.so')
 
 depthwise_x = _depthwise_x_module.depthwise_x
@@ -700,3 +768,4 @@ class DepthwiseXLayer(tf.keras.layers.Layer):
 
     def get_mask_descriptor(self):
         return None
+'''

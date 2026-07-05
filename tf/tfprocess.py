@@ -2836,8 +2836,6 @@ class TFProcess:
 
     # Should be used with prenorm enabled
     def convnext_block(self, x, channels: int, dff: int, kernel_size: int, name: str, training: bool, mask=None):
-        #flow = self.encoder_norm(epsilon=self.encoder_norm_epsilon, name=name + "/ln1")(x)
-        
         flow = du.FusedChessDepthwiseLayer(channels, mask[0], mask[1], mask[2],
                                     name=name + "/d_conv", activation = None)(x)
 
