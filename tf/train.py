@@ -164,15 +164,6 @@ def main(cmd):
     cfg = yaml.safe_load(cmd.cfg.read())
     print(yaml.dump(cfg, default_flow_style=False))
 
-    if "input_train" in cfg["dataset"]:
-        if not cfg["dataset"]["input_train"].endswith("/"):
-            cfg["dataset"]["input_train"] += "/"
-        if not cfg["dataset"]["input_test"].endswith("/"):
-            cfg["dataset"]["input_test"] += "/"
-    elif "input" in cfg["dataset"]:
-        if not cfg["dataset"]["input"].endswith("/"):
-            cfg["dataset"]["input"] += "/"
-
     num_chunks = cfg["dataset"]["num_chunks"]
     allow_less = cfg["dataset"].get("allow_less_chunks", False)
     train_ratio = cfg["dataset"]["train_ratio"]
