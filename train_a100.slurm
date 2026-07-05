@@ -9,6 +9,7 @@
 #SBATCH -C a100
 #SBATCH --output=logs/default_job.out
 #SBATCH --error=logs/default_job.err
+#SBATCH --mem=120G
 
 # --- SÉCURITÉ : Vérification de l'argument ---
 if [ -z "$1" ]; then
