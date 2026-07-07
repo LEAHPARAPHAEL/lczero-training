@@ -3,7 +3,7 @@ import gzip
 import struct
 
 # Modifiez le chemin ici avec le fichier que vous voulez inspecter
-FILENAME = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/training.1577727006.gz"
+FILENAME = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/training.1597466789.gz"
 RECORD_SIZE = 8396  # Taille stricte d'un enregistrement binaire V7
 
 def inspect_file(filename):
