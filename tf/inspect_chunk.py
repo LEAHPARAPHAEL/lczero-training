@@ -93,4 +93,4 @@ def inspect_clean_chains(folder_path, window_seconds=300):
             print("➔ ❌ Aucune liaison de plies trouvée dans ce bloc. Les fragments sont indépendants.")
 
 if __name__ == "__main__":
-    inspect_clean_chains()
+    inspect_clean_chains("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train")
