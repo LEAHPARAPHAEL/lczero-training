@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 CHUNKS_PER_FILE = 20000  
-N_WORKERS = 16           
+N_WORKERS = 40           
 
 def pack_single_batch(file_paths, output_path):
     try:

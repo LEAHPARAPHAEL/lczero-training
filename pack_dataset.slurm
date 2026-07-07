@@ -5,7 +5,7 @@
 #SBATCH --time=20:00:00              
 #SBATCH --nodes=1                     
 #SBATCH --ntasks-per-node=1          
-#SBATCH --cpus-per-task=16            
+#SBATCH --cpus-per-task=40            
 #SBATCH --hint=nomultithread          
 #SBATCH --output=pack_dataset.out
 #SBATCH --error=pack_dataset.err
