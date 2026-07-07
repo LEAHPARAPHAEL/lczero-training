@@ -1,96 +1,87 @@
 #!/usr/bin/env python3
 import os
-import sys
 import gzip
 import struct
 
-RECORD_SIZE = 8396  # Taille d'une position binaire V7
+# Configuration
+FOLDER_PATH = "/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train"
+TARGET_SAMPLES = 1000
+RECORD_SIZE = 8396  # Vos fichiers sont au format V7 (8396 octets)
 
-def inspect_clean_chains(folder_path, window_seconds=300):
-    print("=== Analyse de Chaînage Haute Performance (Sans Scan de Dossier) ===")
-    print(f"Dossier cible : {folder_path}\n")
-    
-    # Étape 1 : Attraper quelques fichiers témoins INSTANTANÉMENT
-    base_files = []
-    with os.scandir(folder_path) as it:
+def analyze_adjudication():
+    print("=== VÉRIFICATION DE L'HYPOTHÈSE D'ADJUDICATION ===")
+    print(f"Recherche de {TARGET_SAMPLES} fichiers témoins se terminant abruptement...\n")
+
+    samples_collected = 0
+    count_adjudicated = 0
+    count_max_length = 0
+    count_both = 0
+    count_natural_or_split = 0
+
+    with os.scandir(FOLDER_PATH) as it:
         for entry in it:
+            if samples_collected >= TARGET_SAMPLES:
+                break
+                
             if entry.is_file() and entry.name.endswith('.gz') and entry.name.startswith('training.'):
                 try:
-                    parts = entry.name.split('.')
-                    ts = int(parts[1])
-                    base_files.append((entry.name, ts))
-                    if len(base_files) >= 5: # 5 témoins suffisent pour valider la structure
-                        break
-                except ValueError:
-                    continue
-
-    if not base_files:
-        print("❌ Erreur : Aucun fichier témoin trouvé.")
-        return
-
-    print(f"Trouvé {len(base_files)} fichiers témoins instantanément.")
-    print(f"Lancement des recherches par sauts de métadonnées (Fenêtre: ±{window_seconds}s)...")
-
-    for base_name, base_ts in base_files:
-        print("\n" + "="*75)
-        print(f"🔍 ANALYSE AUTOUR DE : {base_name} (Timestamp: {base_ts})")
-        print("="*75)
-        
-        # Étape 2 : Vérification d'existence directe seconde par seconde (Zéro Scan)
-        neighbor_files = []
-        for t in range(base_ts - window_seconds, base_ts + window_seconds + 1):
-            test_name = f"training.{t}.gz"
-            test_path = os.path.join(folder_path, test_name)
-            
-            if os.path.exists(test_path): # Appel O(1) ultra-rapide sur Lustre
-                neighbor_files.append((test_name, test_path, t))
-                
-        print(f"↳ {len(neighbor_files)} fichiers actifs découverts à proximité immédiate.")
-        if len(neighbor_files) <= 1:
-            print("↳ ❌ Aucun voisin temporel. Ce fragment est isolé.")
-            continue
-            
-        # Tri chronologique des voisins trouvés
-        neighbor_files.sort(key=lambda x: x[2])
-        
-        # Étape 3 : Lecture des métadonnées de plies des voisins
-        chunk_meta = []
-        for name, path, ts in neighbor_files:
-            try:
-                with gzip.open(path, "rb") as f:
-                    data = f.read()
-                if len(data) < RECORD_SIZE:
-                    continue
-                total_records = len(data) // RECORD_SIZE
-                start_ply = struct.unpack("f", data[8304:8308])[0]
-                end_ply = struct.unpack("f", data[(total_records - 1) * RECORD_SIZE + 8304 : (total_records - 1) * RECORD_SIZE + 8308])[0]
-                
-                chunk_meta.append({
-                    'filename': name,
-                    'total_records': total_records,
-                    'start_ply': round(start_ply, 1),
-                    'end_ply': round(end_ply, 1),
-                    'timestamp': ts
-                })
-            except Exception:
-                continue
-
-        # Étape 4 : Détection des connexions de plies consécutives
-        links_found = 0
-        for idx in range(len(chunk_meta) - 1):
-            a = chunk_meta[idx]
-            target_ply = round(a['end_ply'] - 1.0, 1) # Le coup suivant doit avoir -1 pli restant
-            
-            for b in chunk_meta[idx+1:]:
-                if abs(b['start_ply'] - target_ply) < 0.1:
-                    dt = b['timestamp'] - a['timestamp']
-                    print(f"➔ 🌟 LIAISON DE CONTINUITÉ DÉTECTÉE (Écart: {dt}s) :")
-                    print(f"   ├─ Fragment Précédent : {a['filename']} ({a['total_records']} pos) | Plies: {a['start_ply']} ➔ {a['end_ply']}")
-                    print(f"   └─ Fragment Suivant   : {b['filename']} ({b['total_records']} pos) | Plies: {b['start_ply']} ➔ {b['end_ply']}")
-                    links_found += 1
+                    with gzip.open(entry.path, "rb") as f:
+                        data = f.read()
+                        
+                    if len(data) < RECORD_SIZE:
+                        continue
+                        
+                    total_records = len(data) // RECORD_SIZE
+                    last_offset = (total_records - 1) * RECORD_SIZE
                     
-        if links_found == 0:
-            print("➔ ❌ Aucune liaison de plies trouvée dans ce bloc. Les fragments sont indépendants.")
+                    # 1. Extraction du plies_left de la TOUTE DERNIÈRE position du fichier (offset 8304)
+                    last_plies_left = struct.unpack("f", data[last_offset + 8304 : last_offset + 8308])[0]
+                    
+                    # On ne s'intéresse qu'aux fichiers qui s'arrêtent brutalement (ex: plies_left > 2.0)
+                    if last_plies_left > 2.0:
+                        samples_collected += 1
+                        
+                        # 2. Extraction de l'invariance_info de cette dernière position (offset 8278, 1 octet)
+                        invariance_info = data[last_offset + 8278]
+                        
+                        # 3. Vérification des masques de bits (Bit 5 et Bit 4)
+                        is_adjudicated = bool(invariance_info & 0x20)  # Bit 5 (32)
+                        is_max_length = bool(invariance_info & 0x10)   # Bit 4 (16)
+                        
+                        if is_adjudicated and is_max_length:
+                            count_both += 1
+                        elif is_adjudicated:
+                            count_adjudicated += 1
+                        elif is_max_length:
+                            count_max_length += 1
+                        else:
+                            count_natural_or_split += 1
+                            
+                        # Petit affichage de progression tous les 200 échantillons
+                        if samples_collected % 200 == 0:
+                            print(f"[Progression] {samples_collected}/{TARGET_SAMPLES} fichiers analysés...")
+                            
+                except Exception:
+                    continue
+
+    # --- AFFICHAGE DES RÉSULTATS ---
+    print("\n" + "="*60)
+    print(f" VERDICT SUR {samples_collected} FRAGMENTS INTERROMPUS")
+    print("="*60)
+    print(f"1. Game Adjudicated uniquement (Bit 5)    : {count_adjudicated}")
+    print(f"2. Max Length Exceeded uniquement (Bit 4) : {count_max_length}")
+    print(f"3. Les deux flags simultanément            : {count_both}")
+    print(f"4. AUCUN FLAG ACTIVÉ (Hypothèse du Split) : {count_natural_or_split}")
+    print("="*60)
+    
+    total_flags = count_adjudicated + count_max_length + count_both
+    percentage = (total_flags / samples_collected) * 100
+    
+    print(f"\nConclusion : {percentage:.2f}% des fichiers interrompus possèdent un flag de coupure forcée.")
+    if count_natural_or_split == 0:
+        print(" -> 🌟 VOTRE HYPOTHÈSE EST VRAIE ! Les parties ne sont pas splitées entre les fichiers.")
+    else:
+        print(f" -> 💡 HYPOTHÈSE MIXTE : {count_natural_or_split} fichiers n'ont pas de flag, le fractionnement existe donc minoritairement.")
 
 if __name__ == "__main__":
-    inspect_clean_chains("/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train")
+    analyze_adjudication()
