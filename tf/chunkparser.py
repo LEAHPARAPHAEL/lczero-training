@@ -373,10 +373,15 @@ class ChunkParserInner:
         version = chunkdata[0:4]
         assert (version == V7_VERSION)
         record_size = v7_struct.size
+        total_records = len(chunkdata) // record_size
 
+        # 1. Gather all probabilities upfront (Unchanged)
         probs = [chunkdata[i + 8:i + 8 + 1858 * 4] for i in range(0, len(chunkdata), record_size)]
-        
-        probs.extend(2 * [struct.pack("f", 1.0) + struct.pack("f", -1.0) * 1857])
+        dummy_prob = struct.pack("f", 1.0) + struct.pack("f", -1.0) * 1857
+        probs.extend(2 * [dummy_prob])
+
+        all_plies = [struct.unpack("f", chunkdata[i + 8304 : i + 8308])[0] for i in range(0, len(chunkdata), record_size)]
+        all_plies.extend([0.0, 0.0])  # Safe buffer to prevent IndexOutOfBounds lookups
 
         for i in range(0, len(chunkdata), record_size):
             if self.sample > 1:
@@ -407,7 +412,6 @@ class ChunkParserInner:
 
             try:
                 if self.pc_min is not None or self.pc_max is not None:
-                    
                     planes = record[7440: 7440+104]
                     planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(np.uint8)
                     planes = np.reshape(planes, [13, 64])
@@ -430,7 +434,21 @@ class ChunkParserInner:
                 if thresh_p < 1.0 and random.random() > thresh_p:
                     continue
 
-            record += b"".join(probs[idx + 1 : idx + 3])
+            current_ply = all_plies[idx]
+            next_ply = all_plies[idx + 1]
+            next_next_ply = all_plies[idx + 2]
+
+            # Case A: Next position belongs to a new game (or EOF reached) -> Pad both slots completely
+            if idx + 1 >= total_records or abs((current_ply - next_ply) - 1.0) > 0.01:
+                record += dummy_prob + dummy_prob
+            
+            # Case B: Next position is valid, but the second one (+2) breaks continuity -> Pad only slot 2
+            elif idx + 2 >= total_records or abs((next_ply - next_next_ply) - 1.0) > 0.01:
+                record += probs[idx + 1] + dummy_prob
+            
+            # Case C: Safe sequence continuation -> Peek look-ahead normally
+            else:
+                record += b"".join(probs[idx + 1 : idx + 3])
 
             yield record
 
