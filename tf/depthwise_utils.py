@@ -769,3 +769,96 @@ class DepthwiseXLayer(tf.keras.layers.Layer):
     def get_mask_descriptor(self):
         return None
 '''
+
+from tensorflow.python.framework import ops
+
+_gated_module = tf.load_op_library('./custom_ops/gated_depthwise.so')
+gated_depthwise_native = _gated_module.gated_depthwise
+
+@ops.RegisterGradient("GatedDepthwise")
+def _gated_depthwise_grad(op, d_out):
+    """
+    Connects our highly-optimized dual-kernel C++ infrastructure to TensorFlow.
+    """
+    groups = op.get_attr("groups")
+    activation_mode = op.get_attr("activation_mode")
+    
+    x = op.inputs[0]
+    weights = op.inputs[1]
+    gating = op.inputs[2]
+    biases = op.inputs[3]
+    
+    d_x, d_w, d_g, d_b = _gated_module.gated_depthwise_grad(
+        d_out, x, weights, gating, biases,
+        groups=groups, activation_mode=activation_mode
+    )
+    return d_x, d_w, d_g, d_b
+
+# ============================================================================
+# HIGH-LEVEL LAYER INTERFACE
+# ============================================================================
+class GatedDepthwise(tf.keras.layers.Layer):
+    def __init__(self, channels, groups, activation=None, initializer='glorot_normal', **kwargs):
+        """
+        Instantiates the layer cleanly with structural configuration metadata elements.
+        Usage: layer = du.GatedDepthwise(channels=dff, groups=groups, name=...)
+               flow = layer(flow, gating)
+        """
+        super().__init__(**kwargs)
+        self.channels = channels
+        self.groups = groups
+        self.initializer = initializer
+        
+        self.activation_str = str(activation).lower() if activation is not None else "none"
+        if self.activation_str in ["none", "linear"]:
+            self.activation_mode = 0
+        elif self.activation_str == "mish":
+            self.activation_mode = 1
+        else:
+            raise ValueError(f"Activation mode '{activation}' is not supported by GatedDepthwise.")
+        
+    def build(self, input_shape):
+        self.channels = input_shape[-1]
+        
+        # Base dense 5x5 spatial weights matrix layer footprint [25, C]
+        self.depthwise_kernel = self.add_weight(
+            shape=(25, self.channels),
+            initializer=self.initializer,
+            trainable=True,
+            name='depthwise_kernel'
+        )
+        
+        self.bias = self.add_weight(
+            shape=(self.channels,),
+            initializer='zeros',
+            trainable=True,
+            name='bias'
+        )
+        
+        super().build(input_shape)
+
+    def call(self, inputs, gating_tensor):
+        """
+        Executes the forward pass on the 3D row-major network stream [N, 64, C].
+        """
+        x_fp16 = tf.cast(inputs, tf.float16)
+        w_fp16 = tf.cast(self.depthwise_kernel, tf.float16)
+        g_fp16 = tf.cast(gating_tensor, tf.float16)
+        b_fp16 = tf.cast(self.bias, tf.float16)
+        
+        output = gated_depthwise_native(
+            x_fp16, w_fp16, g_fp16, b_fp16,
+            groups=self.groups,
+            activation_mode=self.activation_mode
+        )
+        
+        return tf.cast(output, inputs.dtype)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "channels": self.channels,
+            "groups": self.groups,
+            "activation": self.activation_str,
+        })
+        return config

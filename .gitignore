@@ -116,3 +116,4 @@ networks/
 *.err
 *.err
 *.out
+*.so

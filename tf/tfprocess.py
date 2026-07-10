@@ -556,12 +556,17 @@ class TFProcess:
         self.se_ratio = self.cfg['model'].get('se_ratio', 2)
         self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 4)
         self.blocks = self.cfg['model'].get('blocks', None)
+        self.gating_compressed = self.cfg['model'].get('gating_compressed')
+        self.gating_hidden = self.cfg['model'].get('gating_hidden')
+        self.gating_gen = self.cfg['model'].get('gating_gen')
+        self.gating_groups = self.cfg['model'].get('gating_groups')
         self.blocks_dims = []
         self.encoder_blocks = 0
         self.residual_blocks = 0
         self.mobilenet_blocks = 0
         self.convnext_blocks = 0
         self.x_blocks = 0
+        self.gating_blocks = 0
         self.cnn_blocks = 0
 
         self.prenorm = self.cfg["model"].get("prenorm", False)
@@ -589,7 +594,7 @@ class TFProcess:
                 self.cnn_blocks += 1
             elif block == 'M':
                 dims = self.cnn_blocks_dims[self.cnn_blocks]
-                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks]
+                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks + self.gating_blocks]
                 if dff > self.max_mobilenet_dff:
                     self.max_mobilenet_dff = dff
                 if dims > self.max_mobilenet_filters :
@@ -597,9 +602,19 @@ class TFProcess:
                 self.blocks_dims.append(dims)
                 self.cnn_blocks += 1
                 self.mobilenet_blocks += 1
+            elif block == 'G':
+                dims = self.cnn_blocks_dims[self.cnn_blocks]
+                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks + self.gating_blocks]
+                if dff > self.max_mobilenet_dff:
+                    self.max_mobilenet_dff = dff
+                if dims > self.max_mobilenet_filters :
+                    self.max_mobilenet_filters = dims
+                self.blocks_dims.append(dims)
+                self.cnn_blocks += 1
+                self.gating_blocks += 1
             elif block == 'C':
                 dims = self.cnn_blocks_dims[self.cnn_blocks]
-                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks]
+                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks + self.gating_blocks]
                 if dff > self.max_convnext_dff:
                     self.max_convnext_dff = dff
                 if dims > self.max_convnext_filters:
@@ -2075,7 +2090,7 @@ class TFProcess:
             #tf.saved_model.save(self.model, leela_path)
             
             # Save playable Leela .pb format
-            if not self.cfg["training"].get("disable_pb_checkpointing") and steps % 50000 == 0:
+            if not self.cfg["training"].get("disable_pb_checkpointing") and steps == self.cfg["training"]["total_steps"]:
                 self.save_leelaz_weights(leela_path)
 
             # === 2. SWA WEIGHTS SAVING (Protected!) ===
@@ -2917,6 +2932,55 @@ class TFProcess:
         return tf.keras.layers.Add()([flow, x])
 
 
+    def gating_weights(self, inputs, dff : int, groups : int, compressed_channels: int, hidden_channels: int, gen_channels: int, name: str, activation="swish"):
+        assert(dff % groups == 0)
+        compressed = tf.keras.layers.Dense(
+            compressed_channels, name=name+"/compress", use_bias=False)(inputs)
+        compressed = tf.reshape(compressed, [-1, 64 * compressed_channels])
+        hidden = tf.keras.layers.Dense(
+            hidden_channels, name=name+"/hidden1_dense", activation=activation)(compressed)
+
+        hidden = tf.keras.layers.LayerNormalization(
+            name=name+"/hidden1_ln")(hidden)
+        gen_from = tf.keras.layers.Dense(
+            groups * gen_channels, name=name+"/gen_from", activation=activation)(hidden)
+        gen_from = tf.keras.layers.LayerNormalization(
+            name=name+"/gen_from_ln", center=True)(gen_from)
+        gen_from = tf.reshape(gen_from, [-1, groups, gen_channels])
+
+        out = tf.keras.layers.Dense(
+            groups * 25, name=name+"/out", use_bias = False)(gen_from)
+        
+        out = tf.sigmoid(out)
+        return tf.reshape(out, [-1, 25, groups])
+
+    def gating_block(self, x, channels: int, dff: int, groups: int, name: str, mask=None):
+        activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
+        gating = self.gating_weights(x, dff, groups, self.gating_compressed, self.gating_hidden,
+                                    self.gating_gen, name = name + "/gating", activation = "swish")
+        flow = tf.keras.layers.Dense(dff,
+                                    use_bias=False, 
+                                    kernel_initializer='glorot_normal', 
+                                    name=name + "/1/conv2d")(x)
+        flow = self.batch_norm(flow, name + '/1/bn', scale=True, axis = -1)
+        flow = activation(flow)
+        
+        # FIXED: pass static 'groups' to init, pass dynamic 'gating' to call
+        flow = du.GatedDepthwise(channels=dff, groups=groups, name=name + "/2/conv2d")(flow, gating)
+
+        flow = self.batch_norm(flow, name + '/2/bn', scale=True, axis = -1)
+        flow = activation(flow)
+
+        flow = tf.keras.layers.Dense(channels, 
+                                    use_bias=False, 
+                                    kernel_initializer='glorot_normal', 
+                                    name=name + "/3/conv2d")(flow)
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True, axis = -1)
+
+        flow = tf.reshape(flow, [-1, 8, 8, channels])
+        flow = self.squeeze_excitation(flow, channels, name, data_format = 'channels_last')
+        flow = tf.reshape(flow, [-1, 64, channels])
+        return tf.keras.layers.Add()([flow, x])
 
     def x_block(self, x, channels: int, dff: int, name: str):
         activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
@@ -3170,7 +3234,7 @@ class TFProcess:
 
     def _is_sequence(self, block_type: str) -> bool:
         """Returns True if the block operates on 3D sequence tensors (B, L, D)."""
-        return block_type in ['T', 'B', 'D', 'X', 'M', 'C']
+        return block_type in ['T', 'B', 'D', 'X', 'M', 'C', 'G']
 
     def _transition_flow(self, flow, prev_type, curr_type, prev_dims, curr_dims, name):
         """Handles reshapes and channel adjustments between blocks."""
@@ -3209,7 +3273,7 @@ class TFProcess:
                                           name=name + "input/conv")(flow)
             flow = self.encoder_norm(name=name+"input/ln", epsilon = self.encoder_norm_epsilon)(flow)
 
-        elif block_type in ['M', 'X']:
+        elif block_type in ['M', 'X', 'G']:
             flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
             flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
             flow = tf.keras.layers.Dense(block_dims, use_bias=False, 
@@ -3281,6 +3345,10 @@ class TFProcess:
         elif block_type == 'X':
             _, _, dff = self._get_depthwise_params()
             flow = self.x_block(flow, channels=block_dims, dff=dff, name=name + "_multiplier")
+
+        elif block_type == 'G':
+            _, _, dff = self._get_depthwise_params()
+            flow = self.gating_block(flow, channels=block_dims, dff=dff, groups = self.gating_groups, name=name + "_gating")
             
         elif block_type in ['T', 'D', 'B']:
             mask, kernel_size = None, 0
