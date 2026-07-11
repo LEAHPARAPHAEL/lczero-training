@@ -570,9 +570,15 @@ class ChunkParserInner:
 
     def parse(self):
         """
-        Read data from child workers and yield batches of unpacked records
+        Read data from child workers and yield batches of unpacked records.
+        🌟 HPC Fix: Automatically falls back to single-threaded sequential generation 
+        if workers=0 and readers don't exist.
         """
-        gen = self.v7_gen()  # read from workers (V7)
+        if hasattr(self, 'readers') and self.readers:
+            gen = self.v7_gen()  # read from workers (V7)
+        else:
+            gen = self.sequential_gen()  # read sequentially in this process (V7)
+
         gen = self.tuple_gen(gen)  # convert v7->tuple
         gen = self.batch_gen(gen)  # assemble into batches
         for b in gen:
