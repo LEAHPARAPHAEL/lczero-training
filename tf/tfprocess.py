@@ -2931,7 +2931,7 @@ class TFProcess:
         flow = tf.reshape(flow, [-1, 64, channels])
         return tf.keras.layers.Add()([flow, x])
 
-
+    '''
     def gating_weights(self, inputs, dff : int, groups : int, compressed_channels: int, hidden_channels: int, gen_channels: int, name: str, activation="swish"):
         assert(dff % groups == 0)
         compressed = tf.keras.layers.Dense(
@@ -2942,30 +2942,62 @@ class TFProcess:
 
         hidden = tf.keras.layers.LayerNormalization(
             name=name+"/hidden1_ln")(hidden)
+        
+        # Keep this layer completely flat (2D)
         gen_from = tf.keras.layers.Dense(
             groups * gen_channels, name=name+"/gen_from", activation=activation)(hidden)
         gen_from = tf.keras.layers.LayerNormalization(
             name=name+"/gen_from_ln", center=True)(gen_from)
-        gen_from = tf.reshape(gen_from, [-1, groups, gen_channels])
 
         out = tf.keras.layers.Dense(
-            groups * 25, name=name+"/out", use_bias = False)(gen_from)
+            25 * groups, name=name+"/out", use_bias = False)(gen_from)
+        
+        out = tf.sigmoid(out)
+        
+        return tf.reshape(out, [-1, 25, groups])
+    '''
+
+    def gating_weights(self, inputs, dff : int, groups : int, hidden_channels: int, name: str, **kwargs):
+        assert(dff % groups == 0)
+        C = inputs.shape[-1]
+        x_spatial = tf.reshape(inputs, [-1, 8, 8, C])
+        
+        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last')(x_spatial)
+        
+        hidden = tf.keras.layers.Dense(
+            hidden_channels, 
+            name=name+"/gating_mlp1"
+        )(pooled)
+
+        hidden = self.batch_norm(hidden, name = name + "/bn", scale = False, axis = -1)
+        hidden = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(hidden)
+        
+        out = tf.keras.layers.Dense(
+            groups * 25, 
+            name=name+"/gating_mlp2", 
+            use_bias=False
+        )(hidden)
         
         out = tf.sigmoid(out)
         return tf.reshape(out, [-1, 25, groups])
 
-    def gating_block(self, x, channels: int, dff: int, groups: int, name: str, mask=None):
+    def gating_block(self, x, channels: int, dff: int, groups: int, name: str):
         activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
-        gating = self.gating_weights(x, dff, groups, self.gating_compressed, self.gating_hidden,
-                                    self.gating_gen, name = name + "/gating", activation = "swish")
+        gating = self.gating_weights(x, 
+                                    dff = dff, 
+                                    groups = groups, 
+                                    compressed_channels = self.gating_compressed, 
+                                    hidden_channels = self.gating_hidden,
+                                    gen_channels = self.gating_gen, 
+                                    name = name + "/gating", 
+                                    activation = "swish")
         flow = tf.keras.layers.Dense(dff,
                                     use_bias=False, 
                                     kernel_initializer='glorot_normal', 
                                     name=name + "/1/conv2d")(x)
         flow = self.batch_norm(flow, name + '/1/bn', scale=True, axis = -1)
         flow = activation(flow)
-        
-        # FIXED: pass static 'groups' to init, pass dynamic 'gating' to call
+
         flow = du.GatedDepthwise(channels=dff, groups=groups, name=name + "/2/conv2d")(flow, gating)
 
         flow = self.batch_norm(flow, name + '/2/bn', scale=True, axis = -1)
