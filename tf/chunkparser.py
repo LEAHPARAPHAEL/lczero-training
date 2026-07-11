@@ -408,6 +408,7 @@ class ChunkParserInner:
             if (np.isnan(plies_left) or 
                 np.isnan(st_q) or np.isnan(st_d) or 
                 np.isnan(root_q) or np.isnan(root_d)):
+                print(f"🚨 DEBUG: Skipped a record due to NaN! plies={plies_left}, st_q={st_q}", flush=True)
                 continue
 
             try:
