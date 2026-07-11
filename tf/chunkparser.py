@@ -371,7 +371,8 @@ class ChunkParserInner:
         diff focus may also skip some records.
         """
         version = chunkdata[0:4]
-        print("Version is V7 : " + (version == V7_VERSION))
+        if (version != V7_VERSION):
+            print("Wrong version !")
         assert (version == V7_VERSION)
         record_size = v7_struct.size
         total_records = len(chunkdata) // record_size
