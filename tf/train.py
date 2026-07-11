@@ -222,7 +222,7 @@ def main(cmd):
                                diff_focus_slope=diff_focus_slope,
                                diff_focus_q_weight=diff_focus_q_weight,
                                diff_focus_pol_scale=diff_focus_pol_scale,
-                               workers=train_workers)
+                               workers=0)
     test_shuffle_size = int(shuffle_size * (1.0 - train_ratio))
     # no diff focus for test_parser
     test_parser = ChunkParser(test_chunks,
@@ -230,7 +230,7 @@ def main(cmd):
                               shuffle_size=test_shuffle_size,
                               sample=SKIP,
                               batch_size=split_batch_size,
-                              workers=test_workers,
+                              workers=0,
                               pc_min = pc_min,
                               pc_max = pc_max)
     

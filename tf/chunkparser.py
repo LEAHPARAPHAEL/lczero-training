@@ -150,7 +150,7 @@ class ChunkParser:
                  diff_focus_slope=0,
                  diff_focus_q_weight=6.0,
                  diff_focus_pol_scale=3.5,
-                 workers=0,
+                 workers=None,
                  pc_min = None,
                  pc_max = None):
         self.inner = ChunkParserInner(self, chunks, expected_input_format,
@@ -371,6 +371,7 @@ class ChunkParserInner:
         diff focus may also skip some records.
         """
         version = chunkdata[0:4]
+        print("Version is V7 : " + (version == V7_VERSION))
         assert (version == V7_VERSION)
         record_size = v7_struct.size
         total_records = len(chunkdata) // record_size
