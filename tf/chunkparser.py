@@ -150,7 +150,7 @@ class ChunkParser:
                  diff_focus_slope=0,
                  diff_focus_q_weight=6.0,
                  diff_focus_pol_scale=3.5,
-                 workers=None,
+                 workers=0,
                  pc_min = None,
                  pc_max = None):
         self.inner = ChunkParserInner(self, chunks, expected_input_format,
@@ -408,7 +408,6 @@ class ChunkParserInner:
             if (np.isnan(plies_left) or 
                 np.isnan(st_q) or np.isnan(st_d) or 
                 np.isnan(root_q) or np.isnan(root_d)):
-                print(f"🚨 DEBUG: Skipped a record due to NaN! plies={plies_left}, st_q={st_q}", flush=True)
                 continue
 
             try:
