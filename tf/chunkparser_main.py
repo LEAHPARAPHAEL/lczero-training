@@ -178,114 +178,6 @@ class ChunkParser:
         return self.inner.sequential()
 
 
-def _spawn_compatible_hpc_worker(queue, writer, config):
-    import gzip
-    import struct
-    import random
-    import numpy as np
-
-    # Extraction stricte des hyperparamètres d'origine
-    sample = config['sample']
-    pc_min = config['pc_min']
-    pc_max = config['pc_max']
-    diff_focus_min = config['diff_focus_min']
-    diff_focus_slope = config['diff_focus_slope']
-    diff_focus_q_weight = config['diff_focus_q_weight']
-    diff_focus_pol_scale = config['diff_focus_pol_scale']
-    expected_input_format = config['expected_input_format']
-
-    # Déclaration locale des signatures binaires V7 immuables
-    V7_VERSION = struct.pack('i', 7)
-    record_size = 8396  # v7_struct.size
-    dummy_prob = struct.pack("f", 1.0) + struct.pack("f", -1.0) * 1857
-
-    while True:
-        filename = queue.get()
-        if filename is None:
-            break
-        try:
-            with gzip.open(filename, "rb") as chunk_file:
-                version = chunk_file.read(4)
-                if version != V7_VERSION:
-                    continue
-                chunk_file.seek(0)
-                chunkdata = chunk_file.read()
-
-            if len(chunkdata) == 0:
-                continue
-
-            total_records = len(chunkdata) // record_size
-            if total_records == 0:
-                continue
-
-            # 1. Collecte des politiques et de la chronologie (Parité absolue)
-            probs = [chunkdata[i + 8 : i + 8 + 1858 * 4] for i in range(0, len(chunkdata), record_size)]
-            probs.extend(2 * [dummy_prob])
-
-            all_plies = [struct.unpack("f", chunkdata[i + 8304 : i + 8308])[0] for i in range(0, len(chunkdata), record_size)]
-            all_plies.extend([0.0, 0.0])
-
-            # 2. Boucle de traitement et filtrage mathématique des positions
-            for i in range(0, len(chunkdata), record_size):
-                if sample > 1 and random.randint(0, sample - 1) != 0:
-                    continue
-
-                idx = i // record_size
-                record = chunkdata[i : i + record_size]
-
-                # Peeks obligatoires pour le focus et la validation
-                best_q = struct.unpack("f", record[8284:8288])[0]
-                orig_q = struct.unpack("f", record[8328:8332])[0]
-                pol_kld = struct.unpack("f", record[8348:8352])[0]
-
-                root_q = struct.unpack("f", record[8280:8284])[0]
-                root_d = struct.unpack("f", record[8288:8292])[0]
-                plies_left = struct.unpack("f", record[8304:8308])[0]
-                st_q = struct.unpack("f", record[8352:8356])[0]
-                st_d = struct.unpack("f", record[8356:8360])[0]
-
-                # Filtrage d'intégrité (Protection anti-NaN)
-                if (np.isnan(plies_left) or np.isnan(st_q) or np.isnan(st_d) or 
-                    np.isnan(root_q) or np.isnan(root_d)):
-                    continue
-
-                # Filtrage géométrique par décompte des pièces (pc_min/pc_max)
-                if pc_min is not None or pc_max is not None:
-                    planes = record[7440 : 7440 + 104]
-                    planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(np.uint8)
-                    planes = np.reshape(planes, [13, 64])
-                    pc = np.sum(planes[1:5, :]) + np.sum(planes[7:11, :])
-                    if pc_min is not None and pc < pc_min:
-                        continue
-                    if pc_max is not None and pc > pc_max:
-                        continue
-
-                # Exécution inconditionnelle du Diff Focus (Copie conforme)
-                if not np.isnan(orig_q) and pol_kld > 0:
-                    diff_q = abs(best_q - orig_q)
-                    total = (diff_focus_q_weight * diff_q + pol_kld) / (diff_focus_q_weight + diff_focus_pol_scale)
-                    thresh_p = diff_focus_min + diff_focus_slope * total
-                    if thresh_p < 1.0 and random.random() > thresh_p:
-                        continue
-
-                # Vérification géométrique de la continuité temporelle inter-jeux
-                current_ply = all_plies[idx]
-                next_ply = all_plies[idx + 1]
-                next_next_ply = all_plies[idx + 2]
-
-                if idx + 1 >= total_records or abs((current_ply - next_ply) - 1.0) > 0.01:
-                    record += dummy_prob + dummy_prob
-                elif idx + 2 >= total_records or abs((next_ply - next_next_ply) - 1.0) > 0.01:
-                    record += probs[idx + 1] + dummy_prob
-                else:
-                    record += b"".join(probs[idx + 1 : idx + 3])
-
-                # Expédition des octets augmentés et sécurisés dans le tube IPC
-                writer.send_bytes(record)
-        except Exception:
-            continue
-
-
 class ChunkParserInner:
     def __init__(self, parent, chunks, expected_input_format, shuffle_size,
                  sample, buffer_size, batch_size, diff_focus_min,
@@ -341,31 +233,17 @@ class ChunkParserInner:
             workers = max(1, mp.cpu_count() - 2)
 
         if workers > 0:
-            print("Using {} worker processes (Strict SPWN Mode).".format(workers))
+            print("Using {} worker processes.".format(workers))
 
             # Start the child workers running
             self.readers = []
             self.writers = []
             parent.processes = []
             self.chunk_filename_queue = mp.Queue(maxsize=4096)
-            
-            # Pack de configuration pour garantir la sérialisation inter-cœurs
-            hpc_config = {
-                'sample': self.sample,
-                'pc_min': self.pc_min,
-                'pc_max': self.pc_max,
-                'diff_focus_min': self.diff_focus_min,
-                'diff_focus_slope': self.diff_focus_slope,
-                'diff_focus_q_weight': self.diff_focus_q_weight,
-                'diff_focus_pol_scale': self.diff_focus_pol_scale,
-                'expected_input_format': self.expected_input_format
-            }
-
             for _ in range(workers):
                 read, write = mp.Pipe(duplex=False)
-                # Utilisation du Worker global autonome adapté à l'étanchéité CUDA
-                p = mp.Process(target=_spawn_compatible_hpc_worker,
-                               args=(self.chunk_filename_queue, write, hpc_config))
+                p = mp.Process(target=self.task,
+                               args=(self.chunk_filename_queue, write))
                 p.daemon = True
                 parent.processes.append(p)
                 p.start()
@@ -692,6 +570,11 @@ class ChunkParserInner:
             yield tuple([b''.join([x[i] for x in s]) for i in range(n_entries)])
 
     def parse(self):
+        """
+        Read data from child workers and yield batches of unpacked records.
+        🌟 HPC Fix: Automatically falls back to single-threaded sequential generation 
+        if workers=0 and readers don't exist.
+        """
         if hasattr(self, 'readers') and self.readers:
             gen = self.v7_gen()  # read from workers (V7)
         else:

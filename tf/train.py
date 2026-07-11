@@ -23,8 +23,13 @@ import sys
 import glob
 import gzip
 import random
-import multiprocessing as mp
 import itertools
+import multiprocessing as mp
+try:
+    # Force Python à utiliser 'spawn' au lieu de 'fork' pour protéger CUDA
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
 from chunkparser import ChunkParser
 import random
 import pickle
@@ -222,7 +227,7 @@ def main(cmd):
                                diff_focus_slope=diff_focus_slope,
                                diff_focus_q_weight=diff_focus_q_weight,
                                diff_focus_pol_scale=diff_focus_pol_scale,
-                               workers=0)
+                               workers=train_workers)
     test_shuffle_size = int(shuffle_size * (1.0 - train_ratio))
     # no diff focus for test_parser
     test_parser = ChunkParser(test_chunks,
@@ -230,7 +235,7 @@ def main(cmd):
                               shuffle_size=test_shuffle_size,
                               sample=SKIP,
                               batch_size=split_batch_size,
-                              workers=0,
+                              workers=test_workers,
                               pc_min = pc_min,
                               pc_max = pc_max)
     
