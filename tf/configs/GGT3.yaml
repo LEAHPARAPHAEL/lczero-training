@@ -131,7 +131,7 @@ model:
     rep_quant: false
     prenorm: true
 
-    gating_groups: 3
+    gating_groups: 8
     gating_compressed: 8
     gating_hidden: 64
     gating_gen: 64

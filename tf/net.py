@@ -444,7 +444,7 @@ class Net:
                 pb_name = 'enc_cnn.' + convblock_to_bp(weights_name)
             elif block_type == 'cnn-cnn':
                 pb_name = 'cnn_cnn.' + convblock_to_bp(weights_name)
-            elif block_type == 'cnn-enc':
+            elif block_type in ['cnn-enc', 'enc-enc']:
                 if layers[1].startswith("dense") :
                     if layers[2].split(':')[0] == 'kernel':
                         pb_name = 'dense_w'

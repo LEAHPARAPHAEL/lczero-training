@@ -2931,26 +2931,23 @@ class TFProcess:
         flow = tf.reshape(flow, [-1, 64, channels])
         return tf.keras.layers.Add()([flow, x])
 
-
+    '''
     def gating_weights(self, inputs, dff : int, groups : int, compressed_channels: int, hidden_channels: int, gen_channels: int, name: str, activation="swish"):
         assert(dff % groups == 0)
         compressed = tf.keras.layers.Dense(
             compressed_channels, name=name+"/compress", use_bias=False)(inputs)
         compressed = tf.reshape(compressed, [-1, 64 * compressed_channels])
-        
         hidden = tf.keras.layers.Dense(
-            hidden_channels, name=name+"/hidden1_dense", use_bias = False)(compressed)
+            hidden_channels, name=name+"/hidden1_dense", activation=activation)(compressed)
 
-        hidden = self.batch_norm(hidden, name = name + "/compress_bn", scale = True, axis = -1)
+        hidden = tf.keras.layers.LayerNormalization(
+            name=name+"/hidden1_ln")(hidden)
         
-        hidden = tf.keras.layers.Activation(activation)(hidden)
-
+        # Keep this layer completely flat (2D)
         gen_from = tf.keras.layers.Dense(
-            groups * gen_channels, name=name+"/gen_from", use_bias = False)(hidden)
-
-        gen_from = self.batch_norm(gen_from, name = name + "/gen_from_bn", scale = True, axis = -1)
-        
-        gen_from = tf.keras.layers.Activation(activation)(gen_from)
+            groups * gen_channels, name=name+"/gen_from", activation=activation)(hidden)
+        gen_from = tf.keras.layers.LayerNormalization(
+            name=name+"/gen_from_ln", center=True)(gen_from)
 
         out = tf.keras.layers.Dense(
             25 * groups, name=name+"/out", use_bias = False)(gen_from)
@@ -2958,8 +2955,8 @@ class TFProcess:
         out = tf.sigmoid(out)
         
         return tf.reshape(out, [-1, 25, groups])
-
     '''
+
     def gating_weights(self, inputs, dff : int, groups : int, hidden_channels: int, name: str, **kwargs):
         assert(dff % groups == 0)
         C = inputs.shape[-1]
@@ -2983,7 +2980,6 @@ class TFProcess:
         
         out = tf.sigmoid(out)
         return tf.reshape(out, [-1, 25, groups])
-    '''
 
     def gating_block(self, x, channels: int, dff: int, groups: int, name: str):
         activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
@@ -3238,9 +3234,8 @@ class TFProcess:
                                     kernel_initializer="glorot_normal",
                                     name=name + "/dense")(flow)
         
-        if not self.prenorm and self.use_cnn_enc_ln:
-            flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-            #flow = ma_gating(flow, name=name+'/ma_gating')
+        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+        #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_cnn(self, flow, target_channels, name):
