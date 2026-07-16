@@ -504,6 +504,7 @@ class TFProcess:
         self.accuracy_thresholds = self.cfg["training"].get(
             "accuracy_thresholds", [1, 2, 5, 10])
 
+    
         # Sparse training
         self.sparse = self.cfg["training"].get("sparse", False)
         self.quantize_activations = self.cfg["model"].get("quantize_activations", False)
@@ -553,6 +554,8 @@ class TFProcess:
         self.policy_d_opponent = self.cfg['model'].get('policy_d_opponent', self.policy_d_model)
         self.policy_d_next = self.cfg['model'].get('policy_d_next', self.policy_d_model)
 
+
+        self.q_ratio = self.cfg['training'].get('q_ratio', 0.5)
         self.se_ratio = self.cfg['model'].get('se_ratio', 2)
         self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 4)
         self.blocks = self.cfg['model'].get('blocks', None)
@@ -1292,10 +1295,10 @@ class TFProcess:
         if self.moves_left:
 
             def moves_left_loss(target, output):
-                # Scale the loss to similar range as other losses.
                 scale = 20.0
-                target = target / scale
-                output = tf.cast(output, tf.float32) / scale
+                target = tf.reshape(target, [-1]) / scale
+                output = tf.reshape(tf.cast(output, tf.float32), [-1]) / scale
+
                 if self.strategy is not None:
                     huber = tf.keras.losses.Huber(
                         10.0 / scale, reduction=tf.keras.losses.Reduction.NONE)
@@ -2931,72 +2934,49 @@ class TFProcess:
         flow = tf.reshape(flow, [-1, 64, channels])
         return tf.keras.layers.Add()([flow, x])
 
-    '''
-    def gating_weights(self, inputs, dff : int, groups : int, compressed_channels: int, hidden_channels: int, gen_channels: int, name: str, activation="swish"):
-        assert(dff % groups == 0)
+
+    def shared_gating_weights(self, inputs, groups : int, compressed_channels: int, hidden_channels: int, gen_channels: int, name: str, activation="swish"):
         compressed = tf.keras.layers.Dense(
             compressed_channels, name=name+"/compress", use_bias=False)(inputs)
         compressed = tf.reshape(compressed, [-1, 64 * compressed_channels])
-        hidden = tf.keras.layers.Dense(
-            hidden_channels, name=name+"/hidden1_dense", activation=activation)(compressed)
-
-        hidden = tf.keras.layers.LayerNormalization(
-            name=name+"/hidden1_ln")(hidden)
         
-        # Keep this layer completely flat (2D)
+        hidden = tf.keras.layers.Dense(
+            hidden_channels, name=name+"/hidden1_dense", use_bias = False)(compressed)
+
+        hidden = self.encoder_norm(epsilon = self.encoder_norm_epsilon, name = name + "/compress_ln")(hidden)
+        
+        hidden = tf.keras.layers.Activation(activation)(hidden)
+
         gen_from = tf.keras.layers.Dense(
-            groups * gen_channels, name=name+"/gen_from", activation=activation)(hidden)
-        gen_from = tf.keras.layers.LayerNormalization(
-            name=name+"/gen_from_ln", center=True)(gen_from)
+            groups * gen_channels, name=name+"/gen_from", use_bias = False)(hidden)
 
-        out = tf.keras.layers.Dense(
-            25 * groups, name=name+"/out", use_bias = False)(gen_from)
+        gen_from = self.encoder_norm(epsilon = self.encoder_norm_epsilon, name = name + "/gen_from_ln")(gen_from)
         
-        out = tf.sigmoid(out)
+        gen_from = tf.keras.layers.Activation(activation)(gen_from)
+
+        return gen_from
+    
+
+    def layer_gating(self, groups : int, name: str):
+        out = tf.keras.layers.Dense(
+            25 * groups, name=name+"/out", use_bias = False)(self.gating_weights)
+        
+        out = tf.tanh(out)
         
         return tf.reshape(out, [-1, 25, groups])
-    '''
 
-    def gating_weights(self, inputs, dff : int, groups : int, hidden_channels: int, name: str, **kwargs):
-        assert(dff % groups == 0)
-        C = inputs.shape[-1]
-        x_spatial = tf.reshape(inputs, [-1, 8, 8, C])
-        
-        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last')(x_spatial)
-        
-        hidden = tf.keras.layers.Dense(
-            hidden_channels, 
-            name=name+"/gating_mlp1"
-        )(pooled)
-
-        hidden = self.batch_norm(hidden, name = name + "/bn", scale = False, axis = -1)
-        hidden = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(hidden)
-        
-        out = tf.keras.layers.Dense(
-            groups * 25, 
-            name=name+"/gating_mlp2", 
-            use_bias=False
-        )(hidden)
-        
-        out = tf.sigmoid(out)
-        return tf.reshape(out, [-1, 25, groups])
 
     def gating_block(self, x, channels: int, dff: int, groups: int, name: str):
         activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
-        gating = self.gating_weights(x, 
-                                    dff = dff, 
-                                    groups = groups, 
-                                    compressed_channels = self.gating_compressed, 
-                                    hidden_channels = self.gating_hidden,
-                                    gen_channels = self.gating_gen, 
-                                    name = name + "/gating", 
-                                    activation = "swish")
+
         flow = tf.keras.layers.Dense(dff,
                                     use_bias=False, 
                                     kernel_initializer='glorot_normal', 
                                     name=name + "/1/conv2d")(x)
         flow = self.batch_norm(flow, name + '/1/bn', scale=True, axis = -1)
         flow = activation(flow)
+
+        gating = self.layer_gating(groups, name = name + "/layer_gating")
 
         flow = du.GatedDepthwise(channels=dff, groups=groups, name=name + "/2/conv2d")(flow, gating)
 
@@ -3040,151 +3020,6 @@ class TFProcess:
         flow = tf.reshape(flow, [-1, 64, channels])
         return tf.keras.layers.Add()([flow, x])
 
-    '''
-    def x_block(self, x, in_out_channels, x_channels, initializer, name):
-        activations = {}
-
-        flow = tf.keras.layers.Dense(x_channels, 
-                                    kernel_initializer=initializer,
-                                    name=name + "/dense1",
-                                    use_bias = True,
-                                    activation = self.DEFAULT_ACTIVATION)(x)
-
-        activations[name + "/dense1"] = flow
-
-        flow = tf.reshape(flow, [-1, 8, 8, x_channels])
-
-        flow = du.FusedChessDepthwiseConv2D(
-            activation = self.DEFAULT_ACTIVATION,
-            precision = self.model_dtype,
-            depthwise_initializer = initializer,
-            name = name + "/d_conv"
-        )(flow)
-        activations[name + "/d_conv"] = flow
-
-        flow = tf.reshape(flow, [-1, 64, x_channels])
-
-        flow = tf.keras.layers.Dense(in_out_channels, 
-                                    kernel_initializer=initializer,
-                                    name=name + "/dense2",
-                                    use_bias = False)(flow)
-
-        activations[name + "/dense2"] = flow
-
-        flow = self.encoder_norm(
-            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
-
-        return flow, activations
-    '''
-
-    '''
-    def x_block(self, x, in_out_channels, x_channels, initializer, name):
-        activations = {}
-
-        flow = tf.keras.layers.Conv2D(x_channels, 
-                                    1,
-                                    kernel_initializer='glorot_normal',
-                                    name=name + "/dense1",
-                                    data_format = 'channels_first',
-                                    use_bias = False)(x)
-
-        activations[name + "/dense1"] = flow
-
-        flow = self.batch_norm(flow, name + '/bn1', scale=False)
-        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
-
-        flow = du.FusedChessDepthwiseConv2D(
-            activation = self.DEFAULT_ACTIVATION,
-            precision = self.model_dtype,
-            depthwise_initializer = 'glorot_normal',
-            name = name + "/d_conv",
-            use_bias = False,
-            data_format = 'channels_first'
-        )(flow)
-        activations[name + "/d_conv"] = flow
-
-        flow = self.batch_norm(flow, name + '/bn2', scale=False, axis = -1)
-
-        flow = tf.keras.layers.Conv2D(in_out_channels, 
-                                    1,
-                                    kernel_initializer='glorot_normal',
-                                    name=name + "/dense2",
-                                    data_format = 'channels_first',
-                                    use_bias = False)(flow)
-
-        activations[name + "/dense2"] = flow
-
-        flow = self.batch_norm(flow, name + '/bn3', scale=True, axis = -1)
-        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
-
-        return flow, activations
-    '''
-
-    '''
-    def x_block(self, x, in_out_channels, x_channels, initializer, name):
-        activations = {}
-
-        flow = tf.reshape(x, [-1, 8, 8, in_out_channels])
-        flow = tf.transpose(flow, perm = [0, 3, 1, 2])
-
-        flow = du.FusedChessDepthwiseConv2D(
-            activation = self.DEFAULT_ACTIVATION,
-            precision = self.model_dtype,
-            depthwise_initializer = initializer,
-            name = name + "/d_conv",
-            data_format = 'channels_first'
-        )(flow)
-
-        flow = tf.transpose(flow, perm = [0, 2, 3, 1])
-        flow = tf.reshape(flow, [-1, 64, in_out_channels])
-        activations[name + "/d_conv"] = flow
-
-        flow, activations_ffn = self.ffn(
-            flow, in_out_channels, x_channels,
-            name=name + "/ffn", 
-            glu=self.glu
-        )
-        
-        activations.update(activations_ffn)
-
-        flow = tf.keras.layers.Dropout(self.dropout_rate, name=name + "/dropout")(flow, training=True) 
-
-        flow = self.encoder_norm(
-            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
-
-        return flow, activations
-    '''
-    '''
-    def x_block(self, x, in_out_channels, x_channels, initializer, name):
-        activations = {}
-        flow = tf.reshape(x, [-1, 8, 8, in_out_channels])
-        flow = tf.transpose(flow, perm = [0, 3, 1, 2])
-
-        flow = du.ExpandedChessDepthwiseConv2D(
-            activation = self.DEFAULT_ACTIVATION,
-            precision = self.model_dtype,
-            depthwise_initializer = initializer,
-            name = name + "/d_conv",
-            data_format = 'channels_first'
-        )(flow)
-
-        flow = tf.transpose(flow, perm = [0, 2, 3, 1])
-        flow = tf.reshape(flow, [-1, 64, in_out_channels * 3])
-        
-        activations[name + "/d_conv"] = flow
-
-        flow = tf.keras.layers.Dense(in_out_channels,
-                                    kernel_initializer=initializer,
-                                    name=name + "/dense",
-                                    use_bias = False)(flow)        
-        
-        activations[name + "/dense"] = flow
-
-        flow = self.encoder_norm(
-            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
-
-        return flow, activations
-    '''
 
     def residual_block(self, x, in_out_channels, name):
 
@@ -3234,8 +3069,9 @@ class TFProcess:
                                     kernel_initializer="glorot_normal",
                                     name=name + "/dense")(flow)
         
-        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
-        #flow = ma_gating(flow, name=name+'/ma_gating')
+        if not self.prenorm and self.use_cnn_enc_ln:
+            flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+            #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
 
     def encoder_to_cnn(self, flow, target_channels, name):
@@ -3313,6 +3149,15 @@ class TFProcess:
                                 name=name + "input/conv")(flow)
             flow = self.batch_norm(flow, name=name + "input/conv/bn", scale=True, axis = -1)
             flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+
+            if block_type == 'G':
+                self.gating_weights = self.shared_gating_weights(flow, 
+                            groups = self.gating_groups, 
+                            compressed_channels = self.gating_compressed, 
+                            hidden_channels = self.gating_hidden,
+                            gen_channels = self.gating_gen, 
+                            name = name + "shared_gating", 
+                            activation = "swish")
             
         elif block_type in ['T', 'D']:
             if self.embedding_ffn == 'D':
