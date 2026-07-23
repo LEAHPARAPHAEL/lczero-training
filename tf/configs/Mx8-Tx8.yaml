@@ -5,7 +5,7 @@ gpu: 0
 dataset:
   num_chunks: 500_000_000
   allow_less_chunks: true
-  train_ratio: 0.95
+  train_ratio: 0.909
   sort_type: name
   input_train: 
     - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/train/training*/'
@@ -35,7 +35,7 @@ training:
     checkpoint_activations: false
     #num_test_positions : 50_000
     train_avg_report_steps: 1_000
-    total_steps: 100_000
+    total_steps: 500_000
     checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000
@@ -134,16 +134,16 @@ model:
     use_cnn_enc_ln: true
 
     blocks: ['M', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    cnn_blocks_dims: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
-    depthwise_masks: [[1024, 1024, 1024], 
-                      [1024, 1024, 1024], 
-                      [1024, 1024, 1024], 
-                      [1024, 1024, 1024], 
-                      [1024, 1024, 1024], 
-                      [1024, 1024, 1024],
-                      [1024, 1024, 1024], 
-                      [1024, 1024, 1024]]
-    cnn_dffs: [3072, 3072, 3072, 3072, 3072, 3072, 3072, 3072]
+    cnn_blocks_dims: [512, 512, 512, 512, 512, 512, 512, 512]
+    depthwise_masks: [[512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512], 
+                      [512, 512, 512]]
+    cnn_dffs: [1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536]
     se_ratio: 2
     
     #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]

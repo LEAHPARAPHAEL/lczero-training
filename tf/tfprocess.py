@@ -2693,19 +2693,6 @@ class TFProcess:
 
             dense1 = dense1 * dense3
 
-        '''
-        dense1 = du.FusedChessDepthwiseLayer(
-            dff, 
-            mask[0], 
-            mask[1], 
-            mask[2],
-            activation = "mish",
-            name = name + "/d_conv",
-            initializer = self.initializer
-        )(dense1)
-
-        dense1 = self.batch_norm(dense1, name = name + "/d_conv/bn", scale = False, axis = -1)
-        '''
         dense1 = du.FusedChessDepthwiseLayer(
             dff, 
             mask[0], 
