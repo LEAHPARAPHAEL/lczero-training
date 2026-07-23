@@ -8,9 +8,9 @@ dataset:
   train_ratio: 0.909
   sort_type: name
   input_train: 
-    - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data_packed/train/training*/'
+    - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data_packed/train/'
   input_test:
-    - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data_packed/test/training*/'
+    - '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data_packed/test/'
   train_workers: 4
   test_workers: 2
   fast_chunk_loading: false
