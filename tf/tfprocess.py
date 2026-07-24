@@ -3054,12 +3054,12 @@ class TFProcess:
             
         return flow
 
-    def encoder_to_encoder(self, flow, current_channels, target_d_model, name):
+    def encoder_to_encoder(self, flow, current_channels, target_d_model, name, use_ln = False):
         flow = tf.keras.layers.Dense(target_d_model, 
                                     kernel_initializer="glorot_normal",
                                     name=name + "/dense")(flow)
         
-        if not self.prenorm and self.use_cnn_enc_ln:
+        if use_ln:
             flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
             #flow = ma_gating(flow, name=name+'/ma_gating')
         return flow
@@ -3107,8 +3107,9 @@ class TFProcess:
             flow = self.cnn_to_cnn(flow, target_channels=curr_dims, name=name + "_cnn-cnn")
 
         elif self._is_sequence(prev_type) and self._is_sequence(curr_type) and prev_dims != curr_dims:
+            use_ln = self.use_cnn_enc_ln and curr_type in ['T', 'D']
             flow = self.encoder_to_encoder(flow, current_channels=prev_dims, 
-                                       target_d_model=curr_dims, name=name + "_enc-enc")
+                                       target_d_model=curr_dims, name=name + "_enc-enc", use_ln = use_ln)
             
         return flow
 
