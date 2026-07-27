@@ -29,12 +29,7 @@ chunkparser.ChunkParserInner.convert_v7_to_tuple = patched_convert_v7_to_tuple
 
 
 # --- CONFIGURATION & PIPELINE INITIALIZATION ---
-def init_pipeline():
-    config_path = os.environ.get("LEELA_CFG", "./configs/GGT3-shared.yaml")
-    if not os.path.exists(config_path):
-        print(f"Error: Configuration file not found at '{config_path}'. Please set the LEELA_CFG environment variable.")
-        sys.exit(1)
-
+def init_pipeline(config_path):
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
 
@@ -367,8 +362,13 @@ def draw_filter_dialog(screen, fonts, filters, reset_btn_rect, close_btn_rect, a
     c_lbl = fonts['sub_bold'].render("APPLY & CLOSE", True, (255, 255, 255))
     screen.blit(c_lbl, c_lbl.get_rect(center=close_btn_rect.center))
 
+import argparse
 # --- MAIN RUNNER LOOP ---
 def main():
+    parser = argparse.ArgumentParser(description = "Gated depthwise kernel inspection")
+    parser.add_argument("--config", "-c", help = "Name of the model to inspect", default = "GGT3-shared")
+    args = parser.parse_args()
+    config_path = f"./configs/{args.config}.yaml"
     random.seed(42)
     np.random.seed(42)
     tf.random.set_seed(42)
@@ -386,7 +386,7 @@ def main():
     }
 
     print("Booting reproducible pipeline streaming engines...")
-    test_iter, tfprocess, groups, parser = init_pipeline()
+    test_iter, tfprocess, groups, parser = init_pipeline(config_path)
     
     state = PositionState(test_iter, tfprocess, groups)
     res = state.advance_position()

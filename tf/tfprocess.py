@@ -2859,38 +2859,45 @@ class TFProcess:
 
         
 
-    def mobile_net_block(self, x, channels : int, dff : int, kernel_size : int, name : str, mask = None):
-        flow = tf.keras.layers.Conv2D(dff, 1,
-                                   data_format='channels_first',
-                                   use_bias = False, 
-                                   kernel_initializer='glorot_normal',
-                                   name = name + "/1/conv2d")(x)
-            
-        flow = self.batch_norm(flow, name + '/1/bn', scale=False)
-        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+    def mobilenet_dense_block(self, x, channels: int, dff: int, kernel_size: int, name: str, mask=None):
+        activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
+
+        flow = tf.keras.layers.Dense(dff,
+                                    use_bias=False, 
+                                    kernel_initializer='glorot_normal', 
+                                    name=name + "/1/conv2d")(x)
+        flow = self.batch_norm(flow, name + '/1/bn', scale=True, axis = -1)
+        flow = activation(flow)
         
+        #flow = tf.reshape(flow, [-1, 8, 8, channels])
+        flow = tf.reshape(flow, [-1, 8, 8, dff])
         flow = du.ChessDepthwiseConv2D(mask, 
                                  kernel_size=[kernel_size, kernel_size],
-                                 data_format='channels_first',
+                                 data_format='channels_last',
                                  padding='same',
                                  use_bias=False,
                                  kernel_initializer='glorot_normal',
                                  name = name + "/2/conv2d",
                                  precision = self.model_dtype)(flow)
 
-        flow = self.batch_norm(flow, name + '/2/bn', scale=False)
-        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
-        flow = tf.keras.layers.Conv2D(channels, 1, padding='same',
-                                   data_format='channels_first',
-                                   use_bias = False, 
-                                   kernel_initializer='glorot_normal',
-                                   name = name + "/3/conv2d")(flow)
+        flow = tf.reshape(flow, [-1, 64, dff])
 
-        flow = self.batch_norm(flow, name + '/3/bn', scale=True)
-        flow = self.squeeze_excitation(flow, channels, name)
 
-        return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
-            tf.keras.layers.Add()([flow, x]))
+        #flow = tf.reshape(flow, [-1, 64, channels])
+        
+        flow = self.batch_norm(flow, name + '/2/bn', scale=True, axis = -1)
+        flow = activation(flow)
+
+        flow = tf.keras.layers.Dense(channels, 
+                                      use_bias=False, 
+                                      kernel_initializer='glorot_normal', 
+                                      name=name + "/3/conv2d")(flow)
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True, axis = -1)
+
+        flow = tf.reshape(flow, [-1, 8, 8, channels])
+        flow = self.squeeze_excitation(flow, channels, name, data_format = 'channels_last')
+        flow = tf.reshape(flow, [-1, 64, channels])
+        return tf.keras.layers.Add()([flow, x])
 
 
 
@@ -2904,11 +2911,23 @@ class TFProcess:
         flow = self.batch_norm(flow, name + '/1/bn', scale=True, axis = -1)
         flow = activation(flow)
         
-        #flow = tf.reshape(flow, [-1, 8, 8, channels])
-        flow = du.FusedChessDepthwiseLayer(dff, mask[0], mask[1], mask[2],
+        if mask is None:
+            flow = tf.reshape(flow, [-1, 8, 8, dff])
+            flow = du.ChessDepthwiseConv2D(mask, 
+                                    kernel_size=[kernel_size, kernel_size],
+                                    data_format='channels_last',
+                                    padding='same',
+                                    use_bias=False,
+                                    kernel_initializer='glorot_normal',
+                                    name = name + "/2/conv2d",
+                                    precision = self.model_dtype)(flow)
+
+            flow = tf.reshape(flow, [-1, 64, dff])
+
+        else:
+            flow = du.FusedChessDepthwiseLayer(dff, mask[0], mask[1], mask[2],
                                     name=name + "/2/conv2d")(flow)
 
-        #flow = tf.reshape(flow, [-1, 64, channels])
         
         flow = self.batch_norm(flow, name + '/2/bn', scale=True, axis = -1)
         flow = activation(flow)
