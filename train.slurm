@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=lczero-training
 #SBATCH --account=kwf@v100
-#SBATCH --time=20:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -10,6 +9,8 @@
 #SBATCH --output=logs/default_job.out
 #SBATCH --error=logs/default_job.err
 #SBATCH --hint=nomultithread
+#SBATCH --time=100:00:00
+#SBATCH --qos=qos_gpu-t4
 
 # --- SÉCURITÉ : Vérification de l'argument ---
 if [ -z "$1" ]; then
