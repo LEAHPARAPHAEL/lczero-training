@@ -366,7 +366,7 @@ import argparse
 # --- MAIN RUNNER LOOP ---
 def main():
     parser = argparse.ArgumentParser(description = "Gated depthwise kernel inspection")
-    parser.add_argument("--config", "-c", help = "Name of the model to inspect", default = "GGT3-shared")
+    parser.add_argument("--config", "-c", help = "Name of the model to inspect", default = "G6T9")
     args = parser.parse_args()
     config_path = f"./configs/{args.config}.yaml"
     random.seed(42)
