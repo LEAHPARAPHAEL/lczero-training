@@ -61,8 +61,8 @@ training:
         moves_left: 1.0
         reg: 1.0
 
-    path: '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/networks/'
-    logs_path : '/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/logs/'
+    path: '/home/raph/leela/networks/'
+    logs_path : '/home/raph/leela/logs'
 
     optimizer: nadam # sgd/nadam/rmsprop/adabelief
     beta_1: 0.9 
