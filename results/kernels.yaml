@@ -1,0 +1,20 @@
+%YAML 1.2
+--- 
+CUDNN_5x5:
+  policy: 49.45
+  nps: 22635
+CUDNN_sparse:
+  policy: 50.45
+  nps: 22403
+#CUDNN_3x3:
+CUDA_sparse_5x5:
+  policy: 50.45
+  nps: 22478
+CUDA_sparse:
+  policy: 50.45
+  nps: 25399 
+  
+#CUDA_3x3:
+CUDA_5x5:
+  policy: 49.45
+  nps: 22406

@@ -381,82 +381,131 @@ class RPEValue(tf.keras.layers.Layer):
 
 
 
-class ParametricRoPE2D(tf.keras.layers.Layer):
-    def __init__(self, num_heads, head_depth, **kwargs):
-        super(ParametricRoPE2D, self).__init__(**kwargs)
-        self.num_heads = num_heads
+class FixedChessRoPE(tf.keras.layers.Layer):
+    """
+    Non-parametric, 4-Axis Rotary Position Embedding for Chess:
+    - 0 Trainable Parameters: Relies purely on fixed harmonic basis functions.
+    - 4-Axis Geometry: Decomposes head dimensions across Rank, File, 
+      Main-Diagonal (r + c), and Anti-Diagonal (r - c + 7).
+    - Grid-Calibrated Base Frequency: base=16.0 targets board distances (0 to 14).
+    - Fully Vectorized: Rotates all 4 axes simultaneously without python loops.
+    """
+    def __init__(self, head_depth: int, base: float = 16.0, **kwargs):
+        super(FixedChessRoPE, self).__init__(**kwargs)
         self.head_depth = head_depth
+        self.base = base
         
+        assert head_depth % 8 == 0, (
+            f"head_depth ({head_depth}) must be divisible by 8 for 4-axis RoPE!"
+        )
+        self.d_axis = head_depth // 4
+        self.d_half = self.d_axis // 2
+
     def build(self, input_shape):
-        d_axis = self.head_depth // 2
-        d_half = d_axis // 2
-        
-        # Base log-linear frequency initialization
-        base_freq = 1.0 / (10000 ** (tf.range(0, d_half, dtype=tf.float32) / d_half))
-        init_freq_tiled = tf.tile(tf.expand_dims(base_freq, 0), [self.num_heads, 1])
-        
-        # Enforce dtype=tf.float32 for initial variable allocation
-        self.freq_rank = self.add_weight(
-            name="freq_rank",
-            shape=[self.num_heads, d_half],
-            initializer=tf.constant_initializer(init_freq_tiled.numpy()),
-            dtype=tf.float32,
-            trainable=True
-        )
-        self.freq_file = self.add_weight(
-            name="freq_file",
-            shape=[self.num_heads, d_half],
-            initializer=tf.constant_initializer(init_freq_tiled.numpy()),
-            dtype=tf.float32,
-            trainable=True
-        )
+        # 1. Compute geometric frequency schedule for half the per-axis dimension
+        # Wavelengths range from ~1.0 square up to ~14.0 squares
+        inv_freq = 1.0 / (self.base ** (tf.range(0, self.d_half, dtype=tf.float32) / self.d_half))
 
-    def call(self, x):
-        d_axis = self.head_depth // 2
-        d_half = d_axis // 2
-
-        # 1. Split features into separate Rank and File components
-        x_rank = x[..., :d_axis]
-        x_file = x[..., d_axis:]
-
-        # 2. Create absolute board positions in strict float32
+        # 2. Generate 2D coordinate values for all 64 squares in float32
         squares = tf.range(64, dtype=tf.float32)
-        ranks = tf.math.floordiv(squares, 8)  # Row coordinates [64]
-        files = tf.math.mod(squares, 8)       # Col coordinates [64]
+        ranks = tf.math.floordiv(squares, 8.0)       # [64] in [0..7]
+        files = tf.math.mod(squares, 8.0)            # [64] in [0..7]
+        diag1 = ranks + files                        # [64] in [0..14] (Main diagonals)
+        diag2 = ranks - files + 7.0                  # [64] in [0..14] (Anti-diagonals)
 
-        # --- CRITICAL FIX: Explicitly upcast weights back to float32 ---
-        # This completely bypasses Keras's mixed_float16 layer auto-downcasting
-        freq_rank_f32 = tf.cast(self.freq_rank, tf.float32)
-        freq_file_f32 = tf.cast(self.freq_file, tf.float32)
+        # Stack coordinates into shape: [4, 64]
+        coords = tf.stack([ranks, files, diag1, diag2], axis=0)
 
-        # 3. Compute unique outer products per head using tf.einsum (Safely uniform float32)
-        raw_angles_rank = tf.einsum('r,hd->hrd', ranks, freq_rank_f32)
-        raw_angles_file = tf.einsum('c,hd->hcd', files, freq_file_f32)
+        # 3. Outer product between coordinates and frequencies: [4, 64, d_half]
+        angles = tf.einsum('cs,d->csd', coords, inv_freq)
 
-        # Replicate and expand to fill the full d_axis channel space
-        angles_rank = tf.concat([raw_angles_rank, raw_angles_rank], axis=-1)
-        angles_file = tf.concat([raw_angles_file, raw_angles_file], axis=-1)
+        # Duplicate angles across full d_axis channels: [4, 64, d_axis]
+        angles = tf.concat([angles, angles], axis=-1)
 
-        # Compute wave functions in float32 to maintain grid resolution, then cast down to x.dtype (float16)
-        cos_rank = tf.reshape(tf.cast(tf.cos(angles_rank), x.dtype), [1, self.num_heads, 64, d_axis])
-        sin_rank = tf.reshape(tf.cast(tf.sin(angles_rank), x.dtype), [1, self.num_heads, 64, d_axis])
-        cos_file = tf.reshape(tf.cast(tf.cos(angles_file), x.dtype), [1, self.num_heads, 64, d_axis])
-        sin_file = tf.reshape(tf.cast(tf.sin(angles_file), x.dtype), [1, self.num_heads, 64, d_axis])
+        # Permute and reshape to [1, 1, 64, 4, d_axis] for zero-cost head/batch broadcasting
+        angles = tf.transpose(angles, perm=[1, 0, 2])  # [64, 4, d_axis]
+        angles = tf.reshape(angles, [1, 1, 64, 4, self.d_axis])
 
-        # Safe half-rotation block fully compatible with mixed precision compilers
-        def rotate_half(t):
-            t1 = t[..., :d_half]
-            t2 = t[..., d_half:]
-            return tf.concat([-t2, t1], axis=-1)
+        # Cache precomputed sinusoidal tables as non-trainable constant tensors
+        self.cos_cached = tf.constant(tf.cos(angles), dtype=tf.float32)
+        self.sin_cached = tf.constant(tf.sin(angles), dtype=tf.float32)
 
-        # 4. Execute head-specific spatial transformations in native float16
-        rot_rank = x_rank * cos_rank + rotate_half(x_rank) * sin_rank
-        rot_file = x_file * cos_file + rotate_half(x_file) * sin_file
+    def _apply_rotation(self, x):
+        # x input shape: (batch, heads, 64, head_depth)
+        b = tf.shape(x)[0]
+        h = tf.shape(x)[1]
 
-        # 5. Merge channels back to full head depth
-        return tf.concat([rot_rank, rot_file], axis=-1)
+        # Reshape directly into the 4 coordinate axis subspaces
+        x_reshaped = tf.reshape(x, [b, h, 64, 4, self.d_axis])
+
+        # Half-rotation block: [-x2, x1] along the channel axis
+        t1 = x_reshaped[..., :self.d_half]
+        t2 = x_reshaped[..., self.d_half:]
+        x_rotated = tf.concat([-t2, t1], axis=-1)
+
+        # Cast trigonometric cache to match the activation precision (fp16/fp32)
+        cos = tf.cast(self.cos_cached, x.dtype)
+        sin = tf.cast(self.sin_cached, x.dtype)
+
+        # Rotary transformation
+        out = x_reshaped * cos + x_rotated * sin
+
+        # Merge subspaces back to full head depth
+        return tf.reshape(out, [b, h, 64, self.head_depth])
+
+    def call(self, q, k=None):
+        q_rot = self._apply_rotation(q)
+        if k is not None:
+            k_rot = self._apply_rotation(k)
+            return q_rot, k_rot
+        return q_rot
 
 
+
+def get_alibi_slopes(num_heads: int):
+    """
+    Computes geometric slopes per head following Press et al. (2021).
+    """
+    def get_slopes_power_of_2(n):
+        start = (2 ** (- (2 ** -(np.log2(n) - 3))))
+        ratio = start
+        return [start * (ratio ** i) for i in range(n)]
+
+    if np.log2(num_heads).is_integer():
+        return get_slopes_power_of_2(num_heads)
+    else:
+        closest_power_of_2 = 2 ** int(np.floor(np.log2(num_heads)))
+        slopes_a = get_slopes_power_of_2(closest_power_of_2)
+        slopes_b = get_slopes_power_of_2(2 * closest_power_of_2)[0::2]
+        return slopes_a + slopes_b[:num_heads - closest_power_of_2]
+
+
+def make_2d_alibi_bias(num_heads: int, metric: str = "chebyshev"):
+    """
+    Constructs a 2D ALiBi bias tensor of shape (1, num_heads, 64, 64).
+    """
+    slopes = np.array(get_alibi_slopes(num_heads), dtype=np.float32)  # [H]
+    
+    # Generate (rank, file) coordinates for all 64 squares
+    coords = np.array([[i // 8, i % 8] for i in range(64)], dtype=np.float32)
+    r = coords[:, 0:1]  # [64, 1]
+    c = coords[:, 1:2]  # [64, 1]
+    
+    dr = np.abs(r - r.T)  # [64, 64]
+    dc = np.abs(c - c.T)  # [64, 64]
+    
+    if metric == "chebyshev":
+        dist = np.maximum(dr, dc)
+    elif metric == "manhattan":
+        dist = dr + dc
+    elif metric == "euclidean":
+        dist = np.sqrt(dr ** 2 + dc ** 2)
+    else:
+        raise ValueError(f"Unknown ALiBi distance metric: {metric}")
+        
+    # Bias is -m * distance, expanded to [1, H, 64, 64]
+    bias = -(slopes[:, None, None] * dist[None, :, :])
+    return np.expand_dims(bias, axis=0).astype(np.float32)
 
 
 class Metric:
@@ -674,6 +723,11 @@ class TFProcess:
         self.use_rpe_k = self.cfg["model"].get("use_rpe_k", False)
         self.use_rpe_v = self.cfg["model"].get("use_rpe_v", False)
         self.use_rope = self.cfg["model"].get("use_rope", False)
+
+        self.use_alibi = self.cfg["model"].get("use_alibi", False)
+        self.alibi_metric = self.cfg["model"].get("alibi_metric", "manhattan")
+        
+
 
         self.use_logit_gating = self.cfg["model"].get("use_logit_gating", False)
         self.use_absolute_pe = self.cfg["model"].get("use_absolute_pe", False)
@@ -898,6 +952,10 @@ class TFProcess:
             # Keep original variance scaling for Post-LN / DeepNorm
             self.initializer = tf.keras.initializers.VarianceScaling(
                 scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+
+        if self.use_alibi:
+            alibi_np = make_2d_alibi_bias(self.encoder_heads, metric=self.alibi_metric)
+            self.alibi_bias = tf.constant(alibi_np, dtype=self.model_dtype)
 
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
@@ -2505,26 +2563,24 @@ class TFProcess:
 
         # 0 h 64 d, 0 h 64 d
         dk = tf.cast(tf.shape(k)[-1], self.model_dtype)
-        scaleDivisor = tf.pow(dk, 0.25)
-        # q = q / scaleDivisor
-        # k = k / scaleDivisor
 
         matmul_qk = tf.matmul(q, k, transpose_b=True)
-        batch_size = tf.shape(q)[0]
         heads = q.shape[1]
-
-
 
         if self.use_rpe_q:
             matmul_qk = matmul_qk + RPELogits(name=name+"/rpe_q", rpe_type='q')(q)
         if self.use_rpe_k:
             matmul_qk = matmul_qk + RPELogits(name=name+"/rpe_k", rpe_type='k')(k)
 
-
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
     
+        # Apply 2D ALiBi Bias to encoder self-attention
+        if self.use_alibi:
+            scaled_attention_logits = scaled_attention_logits + tf.cast(
+                self.alibi_bias[:, :heads, :, :], scaled_attention_logits.dtype
+            )
+
         if hasattr(self, 'mha_mask'):
-            # Slice the mask for this specific layer
             layer_mask = self.mha_mask[layer_idx, :, :heads, :, :]
             scaled_attention_logits = scaled_attention_logits + layer_mask
 
@@ -2533,12 +2589,8 @@ class TFProcess:
                                                    self.smolgen_gen_sz, name=name+"/smolgen", activation=self.smolgen_activation)
             scaled_attention_logits = scaled_attention_logits + smolgen_weights
 
-
-
-
         if self.use_logit_gating:
             scaled_attention_logits = Gating(name=name+"/rel_bias")(scaled_attention_logits)
-
 
         attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
 
@@ -2547,8 +2599,6 @@ class TFProcess:
         if self.use_rpe_v:
             head_depth = v.shape[-1]
             output = output + RPEValue(head_depth, name=name+'/rpe_v')(attention_weights)
-
-        # output shape = (b, h, 64, d)
 
         return output, scaled_attention_logits
 
@@ -2598,9 +2648,8 @@ class TFProcess:
         v = self.split_heads(v, batch_size, num_heads, head_depth)
 
         if self.use_rope:
-            # Instantiating the layer inline during graph tracing works perfectly in Keras
-            q = ParametricRoPE2D(num_heads, head_depth, name=name+"/rope_q")(q)
-            k = ParametricRoPE2D(num_heads, head_depth, name=name+"/rope_k")(k)
+            # Shared parameter-free 4-axis RoPE
+            q, k = FixedChessRoPE(head_depth=head_depth, base=16.0, name=name+"/rope")(q, k)
 
         scaled_attention, attention_weights = self.scaled_dot_product_attention(
             q, k, v, name=name, inputs=inputs, layer_idx=layer_idx)
