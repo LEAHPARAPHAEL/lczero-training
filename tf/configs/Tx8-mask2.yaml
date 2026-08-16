@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-plain"
+name: "Tx8-mask2"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -131,10 +131,20 @@ model:
     rep_quant: false
 
     blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-    #cnn_blocks_dims: [96, 96]
-    
-    #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
-    #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
-    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
-    #cnn_dffs: [576, 576]
-    #se_ratio: 2
+
+    attention_masks:
+      - pattern: "rook"
+        heads: [0, 1]
+        layers: 'all'
+      - pattern: "bishop"
+        heads: [2, 3]
+        layers: 'all'
+      - pattern: "queen"
+        heads: [4, 5]
+        layers: 'all' 
+      - pattern: "knight"
+        heads: [6]
+        layers: 'all' 
+      - pattern: "color"
+        heads: [7]
+        layers: 'all' 

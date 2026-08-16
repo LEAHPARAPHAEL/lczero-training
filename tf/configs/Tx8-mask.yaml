@@ -34,7 +34,7 @@ training:
     checkpoint_activations: false
     num_test_positions: 50_000
     train_avg_report_steps: 1_000
-    total_steps: 300_000
+    total_steps: 150_000
     checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000
@@ -104,8 +104,8 @@ model:
     smolgen_activation: "swish"
 
     # RPE
-    use_rpe_q: true
-    use_rpe_k: true
+    use_rpe_q: false
+    use_rpe_k: false
     use_rpe_v: false
 
     # Gating
@@ -133,15 +133,21 @@ model:
     blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
 
     attention_masks:
-      - pattern: "color"
-        heads: [0]
-        layers: 'all'
       - pattern: "rook"
-        heads: [1]
+        heads: [0, 1]
         layers: 'all'
       - pattern: "bishop"
-        heads: [2]
-        layers: 'all' 
+        heads: [2, 3]
+        layers: 'all'
       - pattern: "knight"
-        heads: [3]
+        heads: [4]
+        layers: 'all' 
+      - pattern: "king"
+        heads: [5]
+        layers: 'all' 
+      - pattern: "queen"
+        heads: [6]
+        layers: 'all' 
+      - pattern: "all"
+        heads: [7]
         layers: 'all' 
