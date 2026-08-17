@@ -134,17 +134,20 @@ model:
     blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
 
     attention_masks:
-      - pattern: "color"
-        heads: [0]
-        layers: 'all'
       - pattern: "rook"
-        heads: [1]
+        heads: [0, 1]
         layers: 'all'
       - pattern: "bishop"
-        heads: [2]
+        heads: [2, 3]
+        layers: 'all'
+      - pattern: "queen"
+        heads: [4, 5]
         layers: 'all' 
       - pattern: "knight"
-        heads: [3]
+        heads: [6]
+        layers: 'all' 
+      - pattern: "color"
+        heads: [7]
         layers: 'all' 
 
 
