@@ -66,7 +66,7 @@ def make_pattern_mask(pattern):
                 valid = True
                 
             if not valid:
-                mask[i, j] = -10000.0
+                mask[i, j] = -100.0
     return mask
 
 
@@ -724,8 +724,6 @@ class TFProcess:
         self.use_rpe_v = self.cfg["model"].get("use_rpe_v", False)
         self.use_rope = self.cfg["model"].get("use_rope", False)
 
-        self.use_alibi = self.cfg["model"].get("use_alibi", False)
-        self.alibi_metric = self.cfg["model"].get("alibi_metric", "manhattan")
         
 
 
@@ -920,25 +918,28 @@ class TFProcess:
         self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
         num_layers = self.encoder_blocks
         
-        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
-        #smol_head_mask_np = np.ones((num_layers, 1, self.encoder_heads, 1, 1), dtype=float)
+        static_bias_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=np.float32)
+        self.use_static_bias = False
+
+        if self.cfg["model"].get("use_alibi", False):
+            self.use_static_bias = True
+            metric = self.cfg["model"].get("alibi_metric", "chebyshev")
+            alibi_bias = make_2d_alibi_bias(self.encoder_heads, metric=metric)
+            static_bias_np += alibi_bias
 
         for rule in self.attention_masks_cfg:
-            pattern = rule['pattern']
+            self.use_static_bias = True
+            pattern_mask = make_pattern_mask(rule['pattern'])
             heads = rule['heads']
-            #override = rule.get('override_smolgen', False)
             layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
-            
-            pattern_mask = make_pattern_mask(pattern)
             for l in layers:
                 if l < num_layers:
                     for h in heads:
                         if h < self.encoder_heads:
-                            mha_mask_np[l, 0, h, :, :] = pattern_mask
+                            static_bias_np[l, 0, h, :, :] += pattern_mask
+
+        self.static_attn_bias = tf.constant(static_bias_np, dtype=self.model_dtype)
                             
-        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
-
-
         self.total_sublayers = 2.0 * self.encoder_blocks
 
         self.deepnorm_alpha = tf.cast(tf.math.pow(self.total_sublayers, -0.25), self.model_dtype)
@@ -953,9 +954,7 @@ class TFProcess:
             self.initializer = tf.keras.initializers.VarianceScaling(
                 scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
 
-        if self.use_alibi:
-            alibi_np = make_2d_alibi_bias(self.encoder_heads, metric=self.alibi_metric)
-            self.alibi_bias = tf.constant(alibi_np, dtype=self.model_dtype)
+
 
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
@@ -2483,8 +2482,17 @@ class TFProcess:
                     masks.append(None)
     
         self.net.fill_net_v2(numpy_weights, masks)
-        if hasattr(self, 'attention_masks_cfg'):
-            self.net.set_attention_masks(self.attention_masks_cfg)
+        if self.use_static_bias :
+            bias_np = self.static_attn_bias.numpy()  # [L, 1, H, 64, 64]
+            enc_idx = 0
+            for block_idx, block_type in enumerate(self.blocks):
+                if block_type in ['T', 'D', 'B']:
+                    # Tensor shape: [H, 64, 64]
+                    layer_static_bias = bias_np[enc_idx, 0, :, :, :]
+                    name = f"block_{block_idx}_encoder/mha/static_bias:0"
+                    numpy_weights.append([name, layer_static_bias])
+                    masks.append(None)
+                    enc_idx += 1
 
         self.net.set_tower_description(self.residual_blocks,
                                        self.max_residual_filters,
@@ -2574,15 +2582,9 @@ class TFProcess:
 
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
     
-        # Apply 2D ALiBi Bias to encoder self-attention
-        if self.use_alibi:
-            scaled_attention_logits = scaled_attention_logits + tf.cast(
-                self.alibi_bias[:, :heads, :, :], scaled_attention_logits.dtype
-            )
-
-        if hasattr(self, 'mha_mask'):
-            layer_mask = self.mha_mask[layer_idx, :, :heads, :, :]
-            scaled_attention_logits = scaled_attention_logits + layer_mask
+        if hasattr(self, 'static_attn_bias'):
+            layer_bias = self.static_attn_bias[layer_idx, :, :heads, :, :]
+            scaled_attention_logits = scaled_attention_logits + layer_bias
 
         if self.use_smolgen:
             smolgen_weights = self.smolgen_weights(inputs, heads, self.smolgen_hidden_channels, self.smolgen_hidden_sz,

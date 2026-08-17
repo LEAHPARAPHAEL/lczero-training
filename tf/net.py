@@ -323,6 +323,8 @@ class Net:
                 return 's1'
             elif l == 'quantize_2':
                 return 's2'
+            elif l.startswith('static_bias'):
+                return 'static_b'
             elif l.startswith('rpe'):
                 return l
             elif l.startswith('dense'):

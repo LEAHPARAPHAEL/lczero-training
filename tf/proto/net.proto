@@ -129,10 +129,10 @@ message Weights {
     optional Layer dense_w = 7;
     optional Layer dense_b = 8;
     optional Smolgen smolgen = 9;
-
     optional Layer rpe_q = 10;
     optional Layer rpe_k = 11;
     optional Layer rpe_v = 12;
+    optional Layer static_b = 13;
 
     // reserved 13 - 22 for int8 quantization
   }
@@ -442,14 +442,6 @@ message NetworkFormat {
   optional uint32 max_convnext_dff = 19;
   optional uint32 encoder_blocks = 20;
   optional bool prenorm = 21;
-
-
-  message AttentionMask {
-    optional string pattern = 1;
-    repeated uint32 head_indices = 2;
-    repeated uint32 layer_indices = 3;
-  }
-  repeated AttentionMask attention_masks = 22;
 }
 
 message Format {
