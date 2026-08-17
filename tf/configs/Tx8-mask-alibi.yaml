@@ -1,6 +1,6 @@
 %YAML 1.2
 --- 
-name: "Tx8-mask"
+name: "Tx8-mask-alibi"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
@@ -107,6 +107,8 @@ model:
     use_rpe_q: false
     use_rpe_k: false
     use_rpe_v: false
+    use_alibi: true
+    alibi_metric: "manhattan"
 
     # Gating
     use_logit_gating: false

@@ -36,6 +36,20 @@ from keras import backend as K
 import depthwise_utils as du
 
 def make_pattern_mask(pattern):
+    # Offsets reachable in 1 knight jump: (1, 2), (2, 1)
+    # Offsets reachable in 2 knight jumps: (0, 2), (0, 4), (1, 1), (1, 3), (2, 4), (3, 3), and their permutations
+    knight_2step_offsets = {
+        # 1 move
+        (1, 2), (2, 1),
+        # 2 moves
+        (0, 2), (2, 0),
+        (0, 4), (4, 0),
+        (1, 1),
+        (1, 3), (3, 1),
+        (2, 4), (4, 2),
+        (3, 3),
+    }
+
     mask = np.zeros((64, 64), dtype=float)
     for i in range(64):
         r1, c1 = divmod(i, 8)
@@ -53,6 +67,8 @@ def make_pattern_mask(pattern):
             elif pattern == 'bishop' and (dr == dc):
                 valid = True
             elif pattern == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+                valid = True
+            elif pattern in ('knight+', 'knight_plus') and (dr, dc) in knight_2step_offsets:
                 valid = True
             elif pattern == 'queen' and (dr == 0 or dc == 0 or dr == dc):
                 valid = True
