@@ -1,11 +1,11 @@
 %YAML 1.2
 --- 
-name: "Tx8-mask-alibi"
+name: "BT4"
 gpu: 0
 dataset:
   num_chunks: 500_000_000
   allow_less_chunks: true
-  train_ratio: 0.95
+  train_ratio: 0.909
   sort_type: name
   input_train: 
     - '/home/raph/leela/data/train/training*/'
@@ -16,12 +16,13 @@ dataset:
   fast_chunk_loading: false
 training:
     precision: half
+    weight_decay: 0.0001
     swa: false
     swa_output: false
     swa_max_n: 10
     swa_steps: 100
     max_grad_norm: 3.0
-    batch_size: 256
+    batch_size: 512
     num_batch_splits: 1
     #diff_focus_min: 0.025
     #diff_focus_slope: 3.0
@@ -29,27 +30,27 @@ training:
     renorm: true
     renorm_max_r: 1.0
     renorm_max_d: 0.0
-    test_steps: 2000
+    test_steps: 5_000
     disable_pb_checkpointing: false
     checkpoint_activations: false
-    num_test_positions: 50_000
+    #num_test_positions : 50_000
     train_avg_report_steps: 1_000
-    total_steps: 150_000
+    total_steps: 500_000
     checkpoint_steps: 1_000
     shuffle_size: 100_000
     warmup_steps: 1_000
     mask_legal_moves: true
     lr_values: # schedule is likely outdated
-        - 0.0005
-        - 0.0005
+        - 0.00005
+        - 0.00005
     lr_boundaries:
         - 100
     loss_weights:
         policy: 1.0
         policy_optimistic_st: 1.0
         policy_soft: 8.0 # loss is much smaller at optimum
-        policy_opponent: 0.0
-        policy_next: 0.0
+        policy_opponent: 0.1
+        policy_next: 0.1
         value_winner: 1.0
         value_q: 1.0
         value_q_cat: 0.1
@@ -66,49 +67,47 @@ training:
     optimizer: nadam # sgd/nadam/rmsprop/adabelief
     beta_1: 0.9 
     beta_2: 0.999  # these values are only for Nadam
-    epsilon: 0.00001 # 1e-7
+    epsilon: 0.0000001 # 1e-7
     sparse: false
 
     return_attn_wts: false
     return_activations: false
 
 model:              
-    embedding_size: 256
-    policy_embedding_size: 256
-    value_embedding_size: 32
-    moves_left_embedding_size: 32
-    encoder_layers: 8                   # number of intermediate attention layers in the policy head
-    encoder_heads: 8                    # number of attention heads in encoder layers, emb // (32 or 64) recommended
+    embedding_size: 1024
+    policy_embedding_size: 1024
+    value_embedding_size: 128
+    moves_left_embedding_size: 32                 # number of intermediate attention layers in the policy head
+    encoder_layers: 15
+    encoder_heads: 32                   # number of attention heads in encoder layers, emb // (32 or 64) recommended
                                          # with 64 memory is same as embedding, with 32 is double
-    encoder_d_model: 256                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
-    encoder_dff: 384                    # size of the expansion layer in encoder layer ffn
-    policy_d_model: 256                  # size of the query and key vectors in final attention layer
-    policy_d_opt: 256
+    encoder_d_model: 1024                 # size of the Q, K, & V vectors in encoder layers -- divisible by encoder_heads
+    encoder_dff: 1536                    # size of the expansion layer in encoder layer ffn
+    policy_d_model: 1024                  # size of the query and key vectors in final attention layer
+    policy_d_opt: 1024
     policy_d_soft: 256
-    policy_d_opponent: 0
-    policy_d_next: 0
+    policy_d_opponent: 256
+    policy_d_next: 256
     dropout_rate: 0.0                    # the dropout rate used for weight regularization of attention during training
                                         # makes memory 33 -> 39 GB on A100 as observed by Teck and Kovax
 
-    embedding_dense_sz: 64           # number of params added is 50k times this number so care is needed
+    embedding_dense_sz: 512           # number of params added is 50k times this number so care is needed
 
     value: "wdl"
     moves_left: "v1"
     input_type: "classic"
 
     # smolgen: more efficient version of fullgen, adds a lot of params
-    use_smolgen: false
-    smolgen_hidden_channels: 8
-    smolgen_hidden_sz: 64
-    smolgen_gen_sz: 64
+    use_smolgen: true
+    smolgen_hidden_channels: 32
+    smolgen_hidden_sz: 256
+    smolgen_gen_sz: 256
     smolgen_activation: "swish"
 
     # RPE
     use_rpe_q: false
     use_rpe_k: false
     use_rpe_v: false
-    use_alibi: true
-    alibi_metric: "manhattan"
 
     # Gating
     use_logit_gating: false
@@ -116,8 +115,8 @@ model:
     omit_qkv_biases: true 
     encoder_rms_norm: false
     policy_optimistic_st: true
-    policy_opponent: false
-    policy_next: false
+    policy_opponent: true
+    policy_next: true
     value_st: true
     value_q: true
     soft_policy: true
@@ -132,30 +131,14 @@ model:
     quantize_channels: false
     rep_quant: false
 
-    blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
-
-    attention_masks:
-      - pattern: "rook"
-        heads: [0]
-        layers: 'all'
-      - pattern: "anti_rook"
-        heads: [1]
-        layers: 'all'
-      - pattern: "bishop"
-        heads: [2]
-        layers: 'all'
-      - pattern: "anti_bishop"
-        heads: [3]
-        layers: 'all'
-      - pattern: "queen"
-        heads: [4]
-        layers: 'all' 
-      - pattern: "anti_queen"
-        heads: [5]
-        layers: 'all' 
-      - pattern: "knight"
-        heads: [6]
-        layers: 'all' 
-      - pattern: "color"
-        heads: [7]
-        layers: 'all' 
+    blocks: ['T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T']
+    #cnn_blocks_dims: [256, 256, 256, 256, 256, 256]
+    #depthwise_masks: [[192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192], [192, 192, 192]]
+    #cnn_dffs: [576, 576, 576, 576, 576, 576]
+    #se_ratio: 2
+    
+    #depthwise_masks: [[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128],[128, 128, 128]]
+    #depthwise_ffn: [True, True, True, True, True, True, True, True, True]
+    #depthwise_kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    #cnn_dffs: [576, 576]
+    #se_ratio: 2

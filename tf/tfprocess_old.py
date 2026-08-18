@@ -28,6 +28,9 @@ from functools import reduce
 import operator
 import functools
 from net import Net
+from tensorflow.keras.layers import Conv2D
+import re
+import fnmatch
 
 from keras import backend as K
 import depthwise_utils as du
@@ -64,6 +67,15 @@ def make_piece_pattern_mask(piece_type):
             if not valid:
                 mask[i, j] = -10000.0
     return mask
+
+def parse_block_string(block_str):
+    if not block_str: return []
+    tokens = re.findall(r'(\d*)([MTR])', block_str.upper())
+    blocks = []
+    for count, b_type in tokens:
+        count = int(count) if count else 1
+        blocks.extend([b_type] * count)
+    return blocks
 
 # @tf.custom_gradient
 # def gradient_checkpointed_matmul(x, kernel, bias):
@@ -458,7 +470,7 @@ class TFProcess:
             "value_embedding_size", 32)
         self.mov_embedding_size = self.cfg["model"].get(
             "moves_left_embedding_size", 8)
-        self.encoder_layers = self.cfg["model"]["encoder_layers"]
+        self.encoder_blocks = self.cfg["model"]["encoder_layers"]
         self.encoder_heads = self.cfg["model"]["encoder_heads"]
         self.encoder_d_model = self.cfg["model"].get("encoder_d_model")
         self.categorical_value_buckets = self.cfg["model"].get(
@@ -473,17 +485,85 @@ class TFProcess:
         self.policy_d_opponent = self.cfg['model'].get('policy_d_opponent', self.policy_d_model)
         self.policy_d_next = self.cfg['model'].get('policy_d_next', self.policy_d_model)
 
-        self.residual_layers = self.cfg['model'].get('residual_layers', 2)
-        self.residual_layer_type = self.cfg['model'].get('residual_layer_type', 'residual') # or depthwise
-        self.residual_filters = self.cfg['model'].get('residual_input_filters', 192)
-        self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 6)
-        self.expanded_filters = self.expanded_ratio * self.residual_filters
-        self.mask_type = self.cfg['model'].get('mask_type', 'brk')
+        self.se_ratio = self.cfg['model'].get('se_ratio', 2)
+        self.expanded_ratio = self.cfg['model'].get('expanded_ratio', 4)
+        self.blocks = self.cfg['model'].get('blocks', None)
+        self.blocks_dims = []
+        self.encoder_blocks = 0
+        self.residual_blocks = 0
+        self.mobilenet_blocks = 0
+        self.convnext_blocks = 0
+        self.x_blocks = 0
+        self.cnn_blocks = 0
+
+        self.max_residual_filters = 0
+        self.max_mobilenet_filters = 0
+        self.max_convnext_filters = 0
+        self.max_convnext_dff = 0
+        self.max_mobilenet_dff = 0
+        self.max_x_filters = 0
+
+        self.cnn_blocks_dims = self.cfg['model'].get("cnn_blocks_dims")
+        self.cnn_dffs = self.cfg['model'].get("cnn_dffs")
+        
+        for block in self.blocks:
+            if block in ['T', 'B', 'L']:
+                self.encoder_blocks += 1
+                self.blocks_dims.append(self.encoder_d_model)
+            elif block == 'R':
+                self.residual_blocks += 1
+                dims = self.cnn_blocks_dims[self.cnn_blocks]
+                if dims > self.max_residual_filters :
+                    self.max_residual_filters = dims
+                self.blocks_dims.append(dims)
+                self.cnn_blocks += 1
+            elif block == 'M':
+                dims = self.cnn_blocks_dims[self.cnn_blocks]
+                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks]
+                if dff > self.max_convnext_dff:
+                    self.max_convnext_dff = dff
+                if dims > self.max_mobilenet_filters :
+                    self.max_mobilenet_filters = dims
+                self.blocks_dims.append(dims)
+                self.cnn_blocks += 1
+                self.mobilenet_blocks += 1
+            elif block == 'C':
+                dims = self.cnn_blocks_dims[self.cnn_blocks]
+                dff = self.cnn_dffs[self.convnext_blocks + self.mobilenet_blocks]
+                if dff > self.max_convnext_dff:
+                    self.max_convnext_dff = dff
+                if dims > self.max_convnext_filters:
+                    self.max_convnext_filters = dims
+                self.blocks_dims.append(dims)
+                self.convnext_blocks += 1
+                self.cnn_blocks += 1
+            elif block == 'X':
+                dims = self.cnn_blocks_dims[self.cnn_blocks]
+                if dims > self.max_x_filters:
+                    self.max_x_filters = dims
+                self.blocks_dims.append(dims)
+                self.x_blocks += 1
+                self.cnn_blocks += 1                
+
+        self.embedding_style = 'new' if self.blocks[0] == 'T' else 'conv'
+        self.embedding_ffn = self.cfg['model'].get("embedding_ffn", "T")
+        self.depthwise_masks = self.cfg['model'].get("depthwise_masks")
+        self.depthwise_ffn = self.cfg["model"].get("depthwise_ffn")
+        self.depthwise_kernels = self.cfg["model"].get("depthwise_kernels", [5 for _ in range(len(self.blocks) + 1)])
+        self.use_cnn_enc_transition = self.cfg["model"].get("use_cnn_enc_transition", True)
+        precision = self.cfg["training"].get("precision", "single")
+        if precision == "single":
+            self.model_dtype = tf.float32
+        elif precision == "half":
+            self.model_dtype = tf.float16
+        else:
+            raise ValueError("Unknown precision: {}".format(precision))
+
+
 
 
         self.dropout_rate = self.cfg["model"].get("dropout_rate", 0.0)
 
-        precision = self.cfg["training"].get("precision", "single")
         loss_scale = self.cfg["training"].get("loss_scale", 128)
         # added as part of Nadam needs added pr, code is near line 317
         self.weight_decay = self.cfg["training"].get("weight_decay", 0.0)
@@ -524,22 +604,15 @@ class TFProcess:
         self.encoder_rms_norm = self.cfg["model"].get(
             "encoder_rms_norm", False)
 
-        self.embedding_style = self.cfg["model"].get(
-            "embedding_style", "new").lower()
-
         self.return_attn_wts = self.cfg["model"].get("return_attn_wts", False)
         self.return_activations = self.cfg["model"].get("return_activations", False)
 
 
         # experiments with changing have failed
         self.encoder_norm = RMSNorm if self.encoder_rms_norm else tf.keras.layers.LayerNormalization
+        self.encoder_norm_epsilon = self.cfg["training"].get("encoder_norm_epsilon", 1e-3)
 
-        if precision == "single":
-            self.model_dtype = tf.float32
-        elif precision == "half":
-            self.model_dtype = tf.float16
-        else:
-            raise ValueError("Unknown precision: {}".format(precision))
+
     
 
         # Scale the loss to prevent gradient underflow
@@ -564,7 +637,7 @@ class TFProcess:
             self.POLICY_HEAD = pb.NetworkFormat.POLICY_CONVOLUTION
         elif policy_head == "attention":
             self.POLICY_HEAD = pb.NetworkFormat.POLICY_ATTENTION
-            if self.encoder_layers > 0:
+            if self.encoder_blocks > 0:
                 self.net.set_pol_headcount(self.encoder_heads)
         else:
             raise ValueError(
@@ -633,7 +706,7 @@ class TFProcess:
             raise ValueError("Unknown default activation type: {}".format(
                 default_activation))
 
-        if self.encoder_layers > 0:
+        if self.encoder_blocks > 0:
             self.net.set_headcount(self.encoder_heads)
             self.net.set_networkformat(
                 pb.NetworkFormat.NETWORK_ATTENTIONBODY_WITH_MULTIHEADFORMAT)
@@ -645,7 +718,7 @@ class TFProcess:
         if self.embedding_style == "new":
             self.net.set_input_embedding(
                 pb.NetworkFormat.INPUT_EMBEDDING_PE_DENSE)
-        elif self.encoder_layers > 0:
+        elif self.encoder_blocks > 0:
             self.net.set_input_embedding(
                 pb.NetworkFormat.INPUT_EMBEDDING_PE_MAP)
         else:
@@ -702,31 +775,18 @@ class TFProcess:
                                        name='global_step',
                                        trainable=False,
                                        dtype=tf.int64)
-
-        self.attention_masks_cfg = self.cfg["model"].get("attention_masks", [])
-        num_layers = self.encoder_layers 
-        
-        mha_mask_np = np.zeros((num_layers, 1, self.encoder_heads, 64, 64), dtype=float)
-        #smol_head_mask_np = np.ones((num_layers, 1, self.encoder_heads, 1, 1), dtype=float)
-
-        for rule in self.attention_masks_cfg:
-            piece = rule['piece']
-            heads = rule['heads']
-            #override = rule.get('override_smolgen', False)
-            layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
-            
-            piece_mask = make_piece_pattern_mask(piece)
-            for l in layers:
-                if l < num_layers:
-                    for h in heads:
-                        if h < self.encoder_heads:
-                            #if override:
-                            #    smol_head_mask_np[l, 0, h, 0, 0] = 0.0
-                            mha_mask_np[l, 0, h, :, :] = piece_mask
-                            
-        self.mha_mask = tf.constant(mha_mask_np, dtype=self.model_dtype)
-        #self.smol_head_mask = tf.constant(smol_head_mask_np, dtype=self.model_dtype)
         # -----------------------------------------------
+
+        self.total_sublayers = (2.0 * self.encoder_blocks) + (1.0 * (self.convnext_blocks + self.x_blocks))
+        #self.total_sublayers = (2.0 * self.encoder_blocks) + (1.0 * (self.convnext_blocks))
+
+        self.deepnorm_alpha = tf.cast(tf.math.pow(self.total_sublayers, -0.25), self.model_dtype)
+
+        beta = tf.cast(tf.math.pow(4.0 * self.total_sublayers, -0.25), self.model_dtype)
+
+        self.deepnorm_initializer = tf.keras.initializers.VarianceScaling(
+            scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+
 
     def init(self, train_dataset, test_dataset, validation_dataset=None):
         if self.strategy is not None:
@@ -752,6 +812,18 @@ class TFProcess:
                 this.init_net()
         else:
             self.init_net()
+
+    def get_excluded_decay_names(self):
+        excluded_names = []
+        for w in self.model.trainable_weights:
+            # Note: Keras often appends ':0' to weights, so wildcard matching is perfect here
+            if (fnmatch.fnmatch(w.name, '*bias*') or 
+                fnmatch.fnmatch(w.name, '*ln*/*') or 
+                fnmatch.fnmatch(w.name, '*input/kernel*')):
+                
+                excluded_names.append(w.name)
+                
+        return excluded_names
 
     def init_net(self):
         input_var = tf.keras.Input(shape=(112, 8, 8))
@@ -829,8 +901,15 @@ class TFProcess:
             self.optimizer = tf.keras.optimizers.RMSprop(
                 learning_rate=self.active_lr, rho=0.9, momentum=0.0, epsilon=1e-07, centered=True)
         elif self.optimizer_name == "nadam":
+            #excluded_decay_vars = self.get_excluded_decay_names()
             self.optimizer = tf.keras.optimizers.Nadam(
-                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon)
+                learning_rate=self.active_lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.epsilon, weight_decay = self.weight_decay)
+            exclusion_substrings = [
+                            'bias', 
+                            'ln', 
+                            'input/kernel'
+                        ]
+            self.optimizer.exclude_from_weight_decay(var_names=exclusion_substrings)
         else:
             raise ValueError("Unknown optimizer: " + self.optimizer_name)
 
@@ -864,7 +943,7 @@ class TFProcess:
                 n_buckets = self.categorical_value_buckets
             
             # Use a safe float32 epsilon instead of 1e-9
-            epsilon = 1e-5
+            epsilon = self.epsilon
             x = tf.clip_by_value(x, lo, hi - epsilon)
             
             x = (x - lo) / (hi - lo) * n_buckets
@@ -874,10 +953,8 @@ class TFProcess:
         def categorical_value_loss(target, output):
             target = convert_val_to_scalar(target, softmax=False)
             target = split_value_buckets(target)
-            
-            # --- FP32 CAST & CLIPPING ---
-            # Ensure logits are float32 before cross-entropy to prevent exp() overflow
-            output = tf.clip_by_value(output, -20.0, 20.0)
+
+            #output = tf.clip_by_value(output, -20.0, 20.0)
             
             loss = tf.nn.softmax_cross_entropy_with_logits(
                 labels=tf.stop_gradient(target), logits=output)
@@ -1268,7 +1345,7 @@ class TFProcess:
         self.manager = tf.train.CheckpointManager(
             self.checkpoint,
             directory=self.root_dir,
-            max_to_keep=10,
+            max_to_keep=50,
             keep_checkpoint_every_n_hours=24,
             checkpoint_name=self.cfg["name"])
 
@@ -1390,7 +1467,7 @@ class TFProcess:
         # Make sure that ghost batch norm can be applied
         if self.virtual_batch_size and batch_size % self.virtual_batch_size != 0:
             # Adjust required batch size for batch splitting.
-            required_factor = self.virtual_batch_sizes * self.cfg[
+            required_factor = self.virtual_batch_size * self.cfg[
                 "training"].get("num_batch_splits", 1)
             raise ValueError(
                 "batch_size must be a multiple of {}".format(required_factor))
@@ -1692,7 +1769,6 @@ class TFProcess:
         steps = self.global_step.read_value()
 
 
-
         if steps % self.cfg["training"][
                 "train_avg_report_steps"] == 0 or steps % self.cfg["training"][
                     "total_steps"] == 0:
@@ -1734,6 +1810,19 @@ class TFProcess:
             self.last_steps = steps
             for metric in self.train_metrics:
                 metric.reset()
+
+        elif steps % 100 == 0:
+            time_end = time.time()
+            speed = 0
+            if self.time_start:
+                elapsed = time_end - self.time_start
+                steps_elapsed = steps - self.last_steps
+                speed = batch_size * (tf.cast(steps_elapsed, tf.float32) /
+                                      elapsed)
+            print("\n")
+            print("-"*60)
+            print("Train step {}, lr={:g}".format(steps, self.lr), end="\n")
+            print(" > ({:g} pos/s)".format(speed))
 
         if self.sparse:  # !!!
             if not hasattr(self, "sparsity_patterns"):
@@ -1847,7 +1936,7 @@ class TFProcess:
             #tf.saved_model.save(self.model, leela_path)
             
             # Save playable Leela .pb format
-            if not self.cfg["training"].get("disable_pb_checkpointing"):
+            if not self.cfg["training"].get("disable_pb_checkpointing") and steps % 50000 == 0:
                 self.save_leelaz_weights(leela_path)
 
             # === 2. SWA WEIGHTS SAVING (Protected!) ===
@@ -2155,78 +2244,40 @@ class TFProcess:
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
-    def zero_out_masked_smolgen_weights(self):
-        """
-        Forces the LayerNorm Gamma and Beta to 0.0 for masked heads.
-        This guarantees the C++ backend will output exactly 0.0 for these heads
-        without requiring any backend modifications.
-        """
-        import re
-        import numpy as np
-        
-        # Pull parameters from the network state
-        gen_sz = self.smolgen_gen_sz 
-        total_heads = self.encoder_heads
-        num_layers = self.encoder_layers
-
-        # 1. Build a boolean matrix of which heads are active [Layers, Heads]
-        # 1.0 means active, 0.0 means masked out
-        head_is_active = np.ones((num_layers, total_heads), dtype=np.float32)
-
-        for rule in self.attention_masks_cfg:
-            if rule.get('override_smolgen', False):
-                rule_layers = range(num_layers) if rule['layers'] == "all" else rule['layers']
-                for l in rule_layers:
-                    if l < num_layers:
-                        for h in rule['heads']:
-                            if h < total_heads:
-                                head_is_active[l, h] = 0.0  # Kill this head
-
-        # 2. Iterate through the keras model and apply the mask to the gen_from_ln layers
-        for layer in self.model.layers:
-            if "mha/smolgen/gen_from_ln" in layer.name:
-                
-                # Extract the layer index from the name (e.g., "encoder_1/mha/smolgen/gen_from_ln")
-                match = re.search(r'encoder_(\d+)', layer.name)
-                if match:
-                    # Subtract 1 because the names are 1-indexed (encoder_1 -> array index 0)
-                    l_idx = int(match.group(1)) - 1
-                    
-                    # Failsafe bounds check
-                    if l_idx < 0 or l_idx >= num_layers:
-                        continue
-                    
-                    # np.repeat perfectly maps [1.0, 0.0] -> [1.0, 1.0... 0.0, 0.0...] 
-                    # aligning exactly with the tf.reshape([-1, heads, gen_sz]) layout
-                    ln2_mask = np.repeat(head_is_active[l_idx], gen_sz)
-                    
-                    # Get Keras weights (LayerNorm standard is [gamma, beta])
-                    weights = layer.get_weights()
-                    new_weights = []
-                    
-                    for w in weights:
-                        # Multiply each weight array by the 0.0 / 1.0 mask
-                        new_weights.append(w * ln2_mask)
-                        
-                    # Burn the zeros back into the model's graph
-                    layer.set_weights(new_weights)
-                    
-                    masked_count = np.sum(head_is_active[l_idx] == 0.0)
-                    print(f"[{layer.name}] Masked out {masked_count} Smolgen heads.")
-
     def save_leelaz_weights(self, filename: str):
         numpy_weights = []
-        for weight in self.model.weights:
-            numpy_weights.append([weight.name, weight.numpy()])
-        self.net.fill_net_v2(numpy_weights)
-        # --- ADDED FOR CHESSFORMER MASKS ---
-        # Pass the config dictionary we parsed in __init__
+        masks = []
+        for layer in self.model.layers:
+            for weight in layer.weights:
+                if weight.name.split("/")[-1] == "depthwise_kernel:0":
+                    kernel = weight.numpy()
+                    mask = layer.get_mask()
+                    mask_descriptor = layer.get_mask_descriptor()
+                    if mask is not None:
+                        kernel = kernel * mask
+                    numpy_weights.append([weight.name, kernel])
+                    masks.append(mask_descriptor)
+                else:
+                    numpy_weights.append([weight.name, weight.numpy()])
+                    masks.append(None)
+    
+        self.net.fill_net_v2(numpy_weights, masks)
         if hasattr(self, 'attention_masks_cfg'):
             self.net.set_attention_masks(self.attention_masks_cfg)
-        # self.zero_out_masked_smolgen_weights()
-        # -----------------------------------
-        
+
+        self.net.set_tower_description(self.residual_blocks,
+                                       self.max_residual_filters,
+                                       self.mobilenet_blocks, 
+                                       self.max_mobilenet_filters,
+                                       self.max_mobilenet_dff,
+                                       self.convnext_blocks,
+                                       self.max_convnext_filters,
+                                       self.max_convnext_dff,
+                                       self.encoder_blocks,
+                                       self.blocks[0])
+        self.net.pb.weights.epsilon = self.encoder_norm_epsilon
         self.net.save_proto(filename)
+
 
     @staticmethod
     def split_heads(inputs, batch_size: int, num_heads: int, depth: int):
@@ -2266,14 +2317,6 @@ class TFProcess:
         if self.use_smolgen:
             smolgen_weights = self.smolgen_weights(inputs, heads, self.smolgen_hidden_channels, self.smolgen_hidden_sz,
                                                    self.smolgen_gen_sz, name=name+"/smolgen", activation=self.smolgen_activation)
-            '''
-            if hasattr(self, 'smol_head_mask'):
-                # Extract the [1, Heads, 1, 1] multiplier for this specific layer
-                head_mask = self.smol_head_mask[layer_idx, :, :heads, :, :]
-                
-                # Broadcasting will instantly zero out the entire 64x64 grid for masked heads
-                smolgen_weights = smolgen_weights * head_mask
-            '''
             scaled_attention_logits = scaled_attention_logits + smolgen_weights
 
 
@@ -2297,7 +2340,7 @@ class TFProcess:
 
     # multi-head attention in encoder blocks
 
-    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, initializer, name: str, att_expansion: int=1, layer_idx = 0):
+    def mha(self, inputs, emb_size: int, d_model: int, num_heads: int, name: str, att_expansion: int=1, layer_idx = 0):
         depth = d_model * att_expansion
         assert depth % num_heads == 0
 
@@ -2324,7 +2367,7 @@ class TFProcess:
         k = DenseLayer(
             depth, name=name+"/wk", kernel_initializer="glorot_normal", use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
         v = DenseLayer(
-            depth, name=name+"/wv", kernel_initializer=initializer, use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
+            depth, name=name+"/wv", kernel_initializer=self.deepnorm_initializer, use_bias=use_bias, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
 
 
         activations[name + "/wq"] = q
@@ -2359,12 +2402,12 @@ class TFProcess:
         # output = tf.keras.layers.Dense(
         #     emb_size, name=name + "/dense", kernel_initializer=initializer, use_bias=not self.omit_other_biases)(scaled_attention)
 
-        output = DenseLayer(emb_size, name=name + "/dense", kernel_initializer=initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=out_quantize, use_rep_quant=False)(scaled_attention)
+        output = DenseLayer(emb_size, name=name + "/dense", kernel_initializer=self.deepnorm_initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=out_quantize, use_rep_quant=False)(scaled_attention)
         activations[name + "/dense"] = output
         return output, attention_weights, activations
 
     # 2-layer dense feed-forward network in encoder blocks
-    def ffn(self, inputs, emb_size: int, dff: int, initializer, name: str, glu=False):
+    def ffn(self, inputs, emb_size: int, dff: int, name: str, glu=False):
         if glu:
             activation = tf.keras.activations.get("swish")
         elif isinstance(self.ffn_activation, str):
@@ -2382,14 +2425,13 @@ class TFProcess:
         if input_quantize is not None:
             inputs = input_quantize(inputs)
 
-        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=initializer, activation=activation,
-                    use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
-        
-        
+
+        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=self.deepnorm_initializer, activation=activation,
+                                use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)   
         activations[name + "/dense1"] = dense1
 
         if glu:
-            dense3 = DenseLayer(dff, name=name + "/dense3", kernel_initializer=initializer,
+            dense3 = DenseLayer(dff, name=name + "/dense3", kernel_initializer=self.deepnorm_initializer,
                     use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
 
             dense1 = dense1 * dense3
@@ -2398,28 +2440,76 @@ class TFProcess:
         if out_quantize is not None:
             dense1 = out_quantize(dense1)
 
-        out = DenseLayer(emb_size, name=name + "/dense2", kernel_initializer=initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits,
+        out = DenseLayer(emb_size, name=name + "/dense2", kernel_initializer=self.deepnorm_initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits,
                          input_quantize=out_quantize, use_rep_quant=False)(dense1)
         activations[name + "/dense2"] = out
 
         return out, activations
 
-    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, name: str, training: bool, layer_idx = 0):
-        # DeepNorm
-        alpha = tf.cast(tf.math.pow(
-            2. * self.encoder_layers, -0.25), self.model_dtype)
-        beta = tf.cast(tf.math.pow(
-            8. * self.encoder_layers, -0.25), self.model_dtype)
+    def layernorm_depthwise_ffn(self, inputs, emb_size: int, dff: int, mask, kernel_size, name: str, glu=False):
+        if glu:
+            activation = tf.keras.activations.get("swish")
+        elif isinstance(self.ffn_activation, str):
+            activation = tf.keras.activations.get(self.ffn_activation)
+        else:
+            activation = self.ffn_activation
 
-
+    
         activations = {}
 
-        xavier_norm = tf.keras.initializers.VarianceScaling(
-            scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+        use_rep_quant = self.rep_quant
+
+
+        input_quantize = Quantize(name=name+"/quantize_1", n_bits=self.quantize_activation_bits, quantize_channels=self.quantize_channels) if self.quantize_activations else None
+        if input_quantize is not None:
+            inputs = input_quantize(inputs)
+
+        dense1 = DenseLayer(dff, name=name + "/dense1", kernel_initializer=self.deepnorm_initializer, activation=activation,
+                    use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
+        activations[name + "/dense1"] = dense1
+
+        if glu:
+            dense3 = DenseLayer(dff, name=name + "/dense3", kernel_initializer=self.deepnorm_initializer,
+                    use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits, input_quantize=input_quantize, use_rep_quant=use_rep_quant)(inputs)
+
+            dense1 = dense1 * dense3
+
+        dense1 = tf.reshape(dense1, [-1, 8, 8, dff])
+
+        dense1 = du.ChessDepthwiseConv2D(
+            mask, 
+            kernel_size=[kernel_size,kernel_size],
+            data_format='channels_last',
+            padding='same',
+            use_bias=True,
+            kernel_initializer=self.deepnorm_initializer,
+            name = name + "/d_conv",
+            precision = self.model_dtype
+        )(dense1)
+
+        dense1 = tf.reshape(dense1, [-1, 64, dff])
+        #dense1 = self.encoder_norm(
+        #    name=name+"/ln", epsilon = self.encoder_norm_epsilon)(dense1)
+        dense1 = activation(dense1)
+
+        out_quantize = Quantize(name=name+"/quantize_2", n_bits=self.quantize_activation_bits, quantize_channels=False) if self.quantize_activations else None
+        if out_quantize is not None:
+            dense1 = out_quantize(dense1)
+
+        out = DenseLayer(emb_size, name=name + "/dense2", kernel_initializer=self.deepnorm_initializer, use_bias=not self.omit_other_biases, quantized=self.quantize_weights, n_bits=self.quantize_weight_bits,
+                         input_quantize=out_quantize, use_rep_quant=False)(dense1)
+        activations[name + "/dense2"] = out
+
+        return out, activations
+
+
+    def encoder_layer(self, inputs, emb_size: int, d_model: int, num_heads: int, dff: int, block_type : str, mask : list[int], 
+        kernel_size : int, name: str, training: bool, layer_idx = 0):
+        activations = {}
 
         # multihead attention
         attn_output, attn_wts, activations_mha = self.mha(
-            inputs, emb_size, d_model, num_heads, xavier_norm, name=name + "/mha", layer_idx=layer_idx)
+            inputs, emb_size, d_model, num_heads, name=name + "/mha", layer_idx=layer_idx)
 
         activations.update(activations_mha)
 
@@ -2429,19 +2519,22 @@ class TFProcess:
 
         # skip connection + layernorm
         out1 = self.encoder_norm(
-            name=name+"/ln1")(inputs + attn_output * alpha)
+            name=name+"/ln1", epsilon = self.encoder_norm_epsilon)(inputs + attn_output * self.deepnorm_alpha)
         activations[name + "/ln1"] = out1
 
         # feed-forward network
-        ffn_output, activations_ffn = self.ffn(out1, emb_size, dff,
-                              xavier_norm, name=name + "/ffn", glu=self.glu)
+        if block_type == 'T':
+            ffn_output, activations_ffn = self.ffn(out1, emb_size, dff, name=name + "/ffn", glu=self.glu)
+        elif block_type == 'L':
+            ffn_output, activations_ffn = self.layernorm_depthwise_ffn(out1, emb_size, dff, mask, kernel_size, name=name + "/ffn", glu=self.glu)
+
         ffn_output = tf.keras.layers.Dropout(
             self.dropout_rate, name=name + "/dropout2")(ffn_output, training=training)
         
         activations.update(activations_ffn)
 
         out2 = self.encoder_norm(
-            name=name+"/ln2")(out1 + ffn_output * alpha)
+            name=name+"/ln2", epsilon = self.encoder_norm_epsilon)(out1 + ffn_output * self.deepnorm_alpha)
         activations[name + "/ln2"] = out2
 
         return out2, attn_wts, activations
@@ -2464,18 +2557,437 @@ class TFProcess:
         out = self.smol_weight_gen_dense(gen_from)
         return tf.reshape(out, [-1, heads, 64, 64])
 
-    def construct_net(self, inputs, name: str = ""):
-        # Policy head
-        assert self.POLICY_HEAD == pb.NetworkFormat.POLICY_ATTENTION
-        # TODO: re-add support for policy encoder blocks
-        # do some input processing
-        if self.use_smolgen:
-            self.smol_weight_gen_dense = tf.keras.layers.Dense(
-                64 * 64, name=name+"smol_weight_gen", use_bias=False)
+
+    def squeeze_excitation(self, inputs, channels, name):
+        assert channels % self.se_ratio == 0
+
+        pooled = tf.keras.layers.GlobalAveragePooling2D(
+            data_format='channels_first')(inputs)
+        squeezed = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
+            tf.keras.layers.Dense(channels // self.se_ratio,
+                                  kernel_initializer='glorot_normal',
+                                  name=name + '/se/dense1')(pooled))
+        excited = tf.keras.layers.Dense(2 * channels,
+                                        kernel_initializer='glorot_normal',
+                                        name=name + '/se/dense2')(squeezed)
+        return du.ApplySqueezeExcitation()([inputs, excited])
+
+    def batch_norm(self, input, name, scale=False, axis = 1):
+        if self.renorm_enabled:
+            clipping = {
+                "rmin": 1.0 / self.renorm_max_r,
+                "rmax": self.renorm_max_r,
+                "dmax": self.renorm_max_d
+            }
+            return tf.keras.layers.BatchNormalization(
+                epsilon=1e-5,
+                axis=axis,
+                fused=False,
+                center=True,
+                scale=scale,
+                renorm=True,
+                renorm_clipping=clipping,
+                renorm_momentum=self.renorm_momentum,
+                name=name)(input)
+        else:
+            return tf.keras.layers.BatchNormalization(
+                epsilon=1e-5,
+                axis=axis,
+                center=True,
+                scale=scale,
+                virtual_batch_size=self.virtual_batch_size,
+                name=name)(input)
+
+    def convnext_block(self, x, channels: int, dff: int, kernel_size: int, name: str, training: bool, mask=None):
+        flow = du.ChessDepthwiseConv2D(
+            mask, 
+            kernel_size=[kernel_size, kernel_size],
+            data_format='channels_first',
+            padding='same',
+            use_bias=True,
+            kernel_initializer='glorot_normal', 
+            name=name + "/d_conv",
+            precision=self.model_dtype
+        )(x)
+
+        flow = tf.keras.layers.LayerNormalization(
+            axis=1, 
+            epsilon=self.encoder_norm_epsilon,
+            name=name + "/ln1"
+        )(flow)
+
+        flow = tf.transpose(flow, perm=[0, 2, 3, 1])
+        flow = tf.reshape(flow, [-1, 64, channels])
+
+        flow, _ = self.ffn(
+            flow, channels, dff,
+            name=name + "/ffn", 
+            glu=self.glu
+        )
+        
+        flow = tf.keras.layers.Dropout(self.dropout_rate, name=name + "/dropout")(flow, training=training)
+
+        flow = tf.reshape(flow, [-1, 8, 8, channels])
+        flow = tf.transpose(flow, perm=[0, 3, 1, 2])
+
+        summed_flow = x + flow * self.deepnorm_alpha
+
+        final_flow = tf.keras.layers.LayerNormalization(
+            axis=1, 
+            epsilon=self.encoder_norm_epsilon,
+            name=name + "/ln2"
+        )(summed_flow)
+
+        return final_flow
         
 
-        if self.embedding_style == "new":
-            inputs = tf.cast(inputs, self.model_dtype)
+    def mobile_net_block(self, x, channels : int, dff : int, kernel_size : int, name : str, mask = None):
+        flow = tf.keras.layers.Conv2D(dff, 1,
+                                   data_format='channels_first',
+                                   use_bias = False, 
+                                   kernel_initializer='glorot_normal',
+                                   name = name + "/1/conv2d")(x)
+            
+        flow = self.batch_norm(flow, name + '/1/bn', scale=False)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+        
+        flow = du.ChessDepthwiseConv2D(mask, 
+                                 kernel_size=[kernel_size, kernel_size],
+                                 data_format='channels_first',
+                                 padding='same',
+                                 use_bias=False,
+                                 kernel_initializer='glorot_normal',
+                                 name = name + "/2/conv2d",
+                                 precision = self.model_dtype)(flow)
+
+        flow = self.batch_norm(flow, name + '/2/bn', scale=False)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+        flow = tf.keras.layers.Conv2D(channels, 1, padding='same',
+                                   data_format='channels_first',
+                                   use_bias = False, 
+                                   kernel_initializer='glorot_normal',
+                                   name = name + "/3/conv2d")(flow)
+
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True)
+        flow = self.squeeze_excitation(flow, channels, name)
+
+        return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
+            tf.keras.layers.Add()([flow, x]))
+
+
+
+    def mobilenet_v3_block(self, x, channels: int, dff: int, kernel_size: int, name: str, mask=None):
+        activation = tf.keras.activations.get(self.DEFAULT_ACTIVATION)
+
+        flow = tf.keras.layers.Conv2D(dff, 1, 
+                                      data_format='channels_first', 
+                                      use_bias=False, 
+                                      kernel_initializer='glorot_normal', 
+                                      name=name + "/1/conv2d")(x)
+        flow = self.batch_norm(flow, name + '/1/bn', scale=True)
+        flow = activation(flow)
+        
+        flow = du.ChessDepthwiseConv2D(mask, 
+                                       kernel_size=[kernel_size, kernel_size], 
+                                       data_format='channels_first', 
+                                       padding='same',
+                                       use_bias=False, 
+                                       kernel_initializer='glorot_normal', 
+                                       name=name + "/2/conv2d", 
+                                       precision=self.model_dtype)(flow)
+        flow = self.batch_norm(flow, name + '/2/bn', scale=True)
+        flow = activation(flow)
+        
+        flow = self.squeeze_excitation(flow, dff, name)
+
+        flow = tf.keras.layers.Conv2D(channels, 1, 
+                                      data_format='channels_first', 
+                                      use_bias=False, 
+                                      kernel_initializer='glorot_normal', 
+                                      name=name + "/3/conv2d")(flow)
+        flow = self.batch_norm(flow, name + '/3/bn', scale=True)
+
+        return tf.keras.layers.Add()([flow, x])
+
+    '''
+    def x_block(self, x, in_out_channels, x_channels, initializer, name):
+        activations = {}
+
+        flow = tf.keras.layers.Dense(x_channels, 
+                                    kernel_initializer=initializer,
+                                    name=name + "/dense1",
+                                    use_bias = True,
+                                    activation = self.DEFAULT_ACTIVATION)(x)
+
+        activations[name + "/dense1"] = flow
+
+        flow = tf.reshape(flow, [-1, 8, 8, x_channels])
+
+        flow = du.FusedChessDepthwiseConv2D(
+            activation = self.DEFAULT_ACTIVATION,
+            precision = self.model_dtype,
+            depthwise_initializer = initializer,
+            name = name + "/d_conv"
+        )(flow)
+        activations[name + "/d_conv"] = flow
+
+        flow = tf.reshape(flow, [-1, 64, x_channels])
+
+        flow = tf.keras.layers.Dense(in_out_channels, 
+                                    kernel_initializer=initializer,
+                                    name=name + "/dense2",
+                                    use_bias = False)(flow)
+
+        activations[name + "/dense2"] = flow
+
+        flow = self.encoder_norm(
+            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
+
+        return flow, activations
+    '''
+
+    '''
+    def x_block(self, x, in_out_channels, x_channels, initializer, name):
+        activations = {}
+
+        flow = tf.keras.layers.Conv2D(x_channels, 
+                                    1,
+                                    kernel_initializer='glorot_normal',
+                                    name=name + "/dense1",
+                                    data_format = 'channels_first',
+                                    use_bias = False)(x)
+
+        activations[name + "/dense1"] = flow
+
+        flow = self.batch_norm(flow, name + '/bn1', scale=False)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+
+        flow = du.FusedChessDepthwiseConv2D(
+            activation = self.DEFAULT_ACTIVATION,
+            precision = self.model_dtype,
+            depthwise_initializer = 'glorot_normal',
+            name = name + "/d_conv",
+            use_bias = False,
+            data_format = 'channels_first'
+        )(flow)
+        activations[name + "/d_conv"] = flow
+
+        flow = self.batch_norm(flow, name + '/bn2', scale=False, axis = -1)
+
+        flow = tf.keras.layers.Conv2D(in_out_channels, 
+                                    1,
+                                    kernel_initializer='glorot_normal',
+                                    name=name + "/dense2",
+                                    data_format = 'channels_first',
+                                    use_bias = False)(flow)
+
+        activations[name + "/dense2"] = flow
+
+        flow = self.batch_norm(flow, name + '/bn3', scale=True, axis = -1)
+        flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+
+        return flow, activations
+    '''
+
+    
+    def x_block(self, x, in_out_channels, x_channels, initializer, name):
+        activations = {}
+
+        flow = tf.reshape(x, [-1, 8, 8, in_out_channels])
+        flow = tf.transpose(flow, perm = [0, 3, 1, 2])
+
+        flow = du.FusedChessDepthwiseConv2D(
+            activation = self.DEFAULT_ACTIVATION,
+            precision = self.model_dtype,
+            depthwise_initializer = initializer,
+            name = name + "/d_conv",
+            data_format = 'channels_first'
+        )(flow)
+
+        flow = tf.transpose(flow, perm = [0, 2, 3, 1])
+        flow = tf.reshape(flow, [-1, 64, in_out_channels])
+        activations[name + "/d_conv"] = flow
+
+        flow, activations_ffn = self.ffn(
+            flow, in_out_channels, x_channels,
+            name=name + "/ffn", 
+            glu=self.glu
+        )
+        
+        activations.update(activations_ffn)
+
+        flow = tf.keras.layers.Dropout(self.dropout_rate, name=name + "/dropout")(flow, training=True) 
+
+        flow = self.encoder_norm(
+            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
+
+        return flow, activations
+    
+    '''
+    def x_block(self, x, in_out_channels, x_channels, initializer, name):
+        activations = {}
+        flow = tf.reshape(x, [-1, 8, 8, in_out_channels])
+        flow = tf.transpose(flow, perm = [0, 3, 1, 2])
+
+        flow = du.ExpandedChessDepthwiseConv2D(
+            activation = self.DEFAULT_ACTIVATION,
+            precision = self.model_dtype,
+            depthwise_initializer = initializer,
+            name = name + "/d_conv",
+            data_format = 'channels_first'
+        )(flow)
+
+        flow = tf.transpose(flow, perm = [0, 2, 3, 1])
+        flow = tf.reshape(flow, [-1, 64, in_out_channels * 3])
+        
+        activations[name + "/d_conv"] = flow
+
+        flow = tf.keras.layers.Dense(in_out_channels,
+                                    kernel_initializer=initializer,
+                                    name=name + "/dense",
+                                    use_bias = False)(flow)        
+        
+        activations[name + "/dense"] = flow
+
+        flow = self.encoder_norm(
+            name=name+"/ln", epsilon = self.encoder_norm_epsilon)(x + flow * self.deepnorm_alpha)
+
+        return flow, activations
+    '''
+
+    def residual_block(self, x, name):
+
+        m = tf.keras.layers.Conv2D(self.residual_filters,
+                                    3,
+                                    use_bias=False,
+                                    padding='same',
+                                    kernel_initializer='glorot_normal',
+                                    data_format='channels_first',
+                                    name=name + '/1/conv2d')(x)
+ 
+                    
+        m = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
+            self.batch_norm(m, name + '/1/bn', scale=False))
+
+        m = tf.keras.layers.Conv2D(self.residual_filters,
+                                    3,
+                                    use_bias=False,
+                                    padding='same',
+                                    kernel_initializer='glorot_normal',
+                                    data_format='channels_first',
+                                    name=name + '/2/conv2d')(m)
+
+        m = self.squeeze_excitation(self.batch_norm(m, name + '/2/bn', scale=True),
+                                       self.residual_filters,
+                                       name=name + '/se')
+        return tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(
+            tf.keras.layers.add([m, x]))
+
+    def cnn_to_encoder(self, flow, current_channels, target_d_model, name):
+        flow = tf.transpose(flow, perm=[0, 2, 3, 1])
+        flow = tf.reshape(flow, [-1, 64, current_channels])
+        
+        if current_channels != target_d_model or self.use_cnn_enc_transition:
+            flow = tf.keras.layers.Dense(target_d_model, 
+                                        kernel_initializer="glorot_normal",
+                                        name=name + "/dense")(flow)
+        
+        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+        flow = ma_gating(flow, name=name+'/ma_gating')
+        return flow
+
+    def encoder_to_encoder(self, flow, current_channels, target_d_model, name):
+        flow = tf.keras.layers.Dense(target_d_model, 
+                                    kernel_initializer="glorot_normal",
+                                    name=name + "/dense")(flow)
+        
+        flow = self.encoder_norm(name=name+"/ln", epsilon = self.encoder_norm_epsilon)(flow)
+        flow = ma_gating(flow, name=name+'/ma_gating')
+        return flow
+
+    def encoder_to_cnn(self, flow, target_channels, name):
+        flow = tf.reshape(flow, [-1, 8, 8, self.encoder_d_model])
+        flow = tf.transpose(flow, perm=[0, 3, 1, 2])
+        if target_channels != self.encoder_d_model:
+            flow = tf.keras.layers.Conv2D(target_channels, 1, data_format='channels_first',
+                                        use_bias=False, kernel_initializer='glorot_normal',
+                                        name=name + "/conv")(flow)
+            flow = self.batch_norm(flow, name = name + "/bn", scale=True)
+            flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+        return flow
+
+    def cnn_to_cnn(self, flow, target_channels, name):
+        if target_channels != flow.shape[1]:
+            flow = tf.keras.layers.Conv2D(target_channels, 1, data_format='channels_first',
+                                        use_bias=False, kernel_initializer='glorot_normal',
+                                        name=name)(flow)
+            flow = self.batch_norm(flow, name = name, scale=True)
+            flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+        return flow
+
+    def _is_spatial(self, block_type: str) -> bool:
+        """Returns True if the block operates on 4D spatial tensors (NCHW/NHWC)."""
+        return block_type in ['M', 'R', 'C']
+
+    def _is_sequence(self, block_type: str) -> bool:
+        """Returns True if the block operates on 3D sequence tensors (B, L, D)."""
+        return block_type in ['T', 'B', 'L', 'X']
+
+    def _transition_flow(self, flow, prev_type, curr_type, prev_dims, curr_dims, name):
+        """Handles reshapes and channel adjustments between blocks."""
+        if self._is_sequence(prev_type) and self._is_spatial(curr_type):
+            flow = self.encoder_to_cnn(flow, target_channels=curr_dims, name=name + "_enc-cnn")
+            
+        elif self._is_spatial(prev_type) and self._is_sequence(curr_type):
+            flow = self.cnn_to_encoder(flow, current_channels=prev_dims, 
+                                       target_d_model=curr_dims, name=name + "_cnn-enc")
+            
+        elif self._is_spatial(prev_type) and self._is_spatial(curr_type) and prev_dims != curr_dims:
+            flow = self.cnn_to_cnn(flow, target_channels=curr_dims, name=name + "_cnn-cnn")
+
+        elif self._is_sequence(prev_type) and self._is_sequence(curr_type) and prev_dims != curr_dims:
+            flow = self.encoder_to_encoder(flow, current_channels=prev_dims, 
+                                       target_d_model=curr_dims, name=name + "_enc-enc")
+            
+        return flow
+
+    def _build_stem(self, inputs, block_type, block_dims, name):
+        """Builds the initial entry point of the network based on the first block type."""
+        flow = inputs
+        
+        if self._is_spatial(block_type):
+            # C uses a biased 1x1, R uses 3x3, M uses 1x1. 
+            kernel = 3 if block_type == 'R' else 1
+            use_bias = (block_type == 'C')
+            
+            flow = tf.keras.layers.Conv2D(block_dims, kernel, padding='same', 
+                                          data_format='channels_first', use_bias=use_bias, 
+                                          kernel_initializer='glorot_normal',
+                                          name=name + "input/conv")(flow)
+            if not use_bias:
+                flow = self.batch_norm(flow, name=name + "input/conv/bn", scale=True)
+            flow = tf.keras.layers.Activation(self.DEFAULT_ACTIVATION)(flow)
+            
+        elif block_type == 'X':
+            flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
+            flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
+            flow = tf.keras.layers.Dense(block_dims, use_bias=False, 
+                                         kernel_initializer='glorot_normal',
+                                         activation=self.DEFAULT_ACTIVATION,
+                                         name=name + "input")(flow)
+            flow = self.encoder_norm(name=name + "input/ln", epsilon=self.encoder_norm_epsilon)(flow)
+            flow = ma_gating(flow, name=name+'input')
+            
+            
+        elif block_type in ['T', 'L']:
+            if self.embedding_ffn == 'L' and self.depthwise_masks:
+                mask = self.depthwise_masks[depthwise_count]
+                kernel_size = self.depthwise_kernels[depthwise_count]
+                depthwise_count += 1
+            else:
+                mask = None
+                kernel_size = 0
+
             flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
             flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
 
@@ -2483,64 +2995,107 @@ class TFProcess:
             pos_info_flat = tf.reshape(pos_info, [-1, 64 * 12])
 
             pos_info_processed = tf.keras.layers.Dense(
-                64*self.embedding_dense_sz, name=name+"embedding/preprocess")(pos_info_flat)
+                64*self.embedding_dense_sz, name=name+"input/preprocess")(pos_info_flat)
             pos_info = tf.reshape(pos_info_processed,
-                                  [-1, 64, self.embedding_dense_sz])
+                                [-1, 64, self.embedding_dense_sz])
             flow = tf.keras.layers.Concatenate()([flow, pos_info])
 
             # square embedding
             flow = tf.keras.layers.Dense(self.embedding_size, kernel_initializer="glorot_normal",
-                                         activation=self.DEFAULT_ACTIVATION,
-                                         name=name+"embedding")(flow)
-            flow = self.encoder_norm(
-                name=name+"embedding/ln")(flow)
-            flow = ma_gating(flow, name=name+'embedding')
+                                        activation=self.DEFAULT_ACTIVATION,
+                                        name=name+"input")(flow)
+            flow = self.encoder_norm(name=name+"input/ln", epsilon = self.encoder_norm_epsilon)(flow)
+            flow = ma_gating(flow, name=name+'input')
 
-            # DeepNorm
-            alpha = tf.cast(tf.math.pow(
-                2. * self.encoder_layers, -0.25), self.model_dtype)
-            beta = tf.cast(tf.math.pow(
-                8. * self.encoder_layers, -0.25), self.model_dtype)
+            if self.embedding_ffn == 'T':
+                ffn_output, activations = self.ffn(flow, self.embedding_size, self.encoder_dff, name=name + "input/ffn")
+            elif self.embedding_ffn == 'L':
+                ffn_output, activations = self.layernorm_depthwise_ffn(flow, self.embedding_size, self.encoder_dff, mask, kernel_size, name=name + "input/ffn")
 
+            flow = self.encoder_norm(name=name+"input/ffn_ln", epsilon = self.encoder_norm_epsilon)(flow + ffn_output * self.deepnorm_alpha)
 
+            
+        return flow
 
-            xavier_norm = tf.keras.initializers.VarianceScaling(
-                scale=beta, mode="fan_avg", distribution="truncated_normal", seed=42)
+    def _get_depthwise_params(self):
+        mask = self.depthwise_masks[self._depthwise_count] if self.depthwise_masks else None
+        kernel_size = self.depthwise_kernels[self._depthwise_count]
+        dff = self.cnn_dffs[self._depthwise_count]
+        self._depthwise_count += 1
+        return mask, kernel_size, dff
 
-            # feed-forward network
-            ffn_output, activations = self.ffn(flow, self.embedding_size, self.encoder_dff,
-                                  xavier_norm, name=name + "embedding/ffn")
+    def _apply_block(self, flow, block_type, block_dims, block_idx, name, training):
+        block_attn, block_acts = None, {}
 
+        if block_type == 'M':
+            mask, kernel_size, dff = self._get_depthwise_params()
+            flow = self.mobilenet_v3_block(flow, channels=block_dims, dff=dff, 
+                                         kernel_size=kernel_size, name=name + "_mobilenet", mask=mask)
+                                         
+        elif block_type == 'C':
+            mask, kernel_size, dff = self._get_depthwise_params()
+            flow = self.convnext_block(flow, channels=block_dims, dff=dff, 
+                                       kernel_size=kernel_size, name=name + "_convnext", 
+                                       training=training, mask=mask)
+                                       
+        elif block_type == 'R':
+            flow = self.residual_block(flow, name=name + "_residual")
+            
+        elif block_type == 'X':
+            _, _, dff = self._get_depthwise_params()
+            flow, block_acts = self.x_block(flow, block_dims, dff, self.deepnorm_initializer, name=name + "_multiplier")
+            
+        elif block_type in ['T', 'L', 'B']:
+            mask, kernel_size = None, 0
+            if block_type == 'L':
+                mask, kernel_size, _ = self._get_depthwise_params()
 
-            flow = self.encoder_norm(
-                name=name+"embedding/ffn_ln")(flow + ffn_output * alpha)
+            flow, block_attn, block_acts = self.encoder_layer(
+                flow, self.embedding_size, self.encoder_d_model,
+                self.encoder_heads, self.encoder_dff, block_type, mask, kernel_size,
+                name=name + "_encoder", training=training, layer_idx=block_idx)
 
-        elif self.embedding_style == "old":
-            flow = tf.transpose(inputs, perm=[0, 2, 3, 1])
-            flow = tf.reshape(flow, [-1, 64, tf.shape(inputs)[1]])
+        return flow, block_attn, block_acts
 
-            # square embedding
-            flow = tf.keras.layers.Dense(self.embedding_size,
-                                         kernel_initializer='glorot_normal',
-                                         activation=self.DEFAULT_ACTIVATION,
-                                         name='embedding')(flow)
-                
-            flow = ma_gating(flow, name='embedding')
+    def construct_net(self, inputs, name: str = ""):
 
-        else:
-            raise ValueError(
-                "Unknown embedding style: {}".format(self.embedding_style))
-
+        if self.use_smolgen:
+            self.smol_weight_gen_dense = tf.keras.layers.Dense(
+                64 * 64, name=name+"smol_weight_gen", use_bias=False)
+            
+        inputs = tf.cast(inputs, self.model_dtype)
+        flow = inputs
+        
         attn_wts = []
         activations = {}
-        for i in range(self.encoder_layers):
-            flow, attn_wts_l, activations_l = self.encoder_layer(flow, self.embedding_size, self.encoder_d_model,
-                                                  self.encoder_heads, self.encoder_dff,
-                                                  name=name+"encoder_{}".format(i + 1), training=True, layer_idx = i)
+        self._depthwise_count = 0 
+        
+        for block_idx, block_type in enumerate(self.blocks):
+            block_name = f"block_{block_idx}"
+            block_dims = self.blocks_dims[block_idx]
+            
+            if block_idx == 0:
+                flow = self._build_stem(flow, block_type, block_dims, name)
+                
+            else:
+                prev_type = self.blocks[block_idx - 1]
+                prev_dims = self.blocks_dims[block_idx - 1]
+                flow = self._transition_flow(flow, prev_type, block_type, prev_dims, block_dims, block_name)
 
-            attn_wts.append(attn_wts_l)
-            activations.update(activations_l)
+            flow, block_attn, block_acts = self._apply_block(
+                flow, block_type, block_dims, block_idx, block_name, training=True
+            )
+            
+            if block_attn is not None:
+                attn_wts.append(block_attn)
+            activations.update(block_acts)
 
+        if self._is_spatial(self.blocks[-1]):
+            flow = self.cnn_to_encoder(
+                flow, current_channels=self.blocks_dims[-1], 
+                target_d_model=self.encoder_d_model, 
+                name=name+"final_reshape"
+            )
 
         flow_ = flow
 
@@ -2775,4 +3330,3 @@ class TFProcess:
             if layer.name in self.sparsity_patterns:
                 kernel = layer.kernel
                 kernel.assign(kernel * self.sparsity_patterns[layer.name])
-

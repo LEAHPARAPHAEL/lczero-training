@@ -36,19 +36,14 @@ from keras import backend as K
 import depthwise_utils as du
 
 def make_pattern_mask(pattern):
-    # Offsets reachable in 1 knight jump: (1, 2), (2, 1)
-    # Offsets reachable in 2 knight jumps: (0, 2), (0, 4), (1, 1), (1, 3), (2, 4), (3, 3), and their permutations
-    knight_2step_offsets = {
-        # 1 move
-        (1, 2), (2, 1),
-        # 2 moves
-        (0, 2), (2, 0),
-        (0, 4), (4, 0),
-        (1, 1),
-        (1, 3), (3, 1),
-        (2, 4), (4, 2),
-        (3, 3),
-    }
+    is_anti = False
+    base_pattern = pattern
+    if pattern.startswith("anti_"):
+        is_anti = True
+        base_pattern = pattern[5:]
+    elif pattern.startswith("not_"):
+        is_anti = True
+        base_pattern = pattern[4:]
 
     mask = np.zeros((64, 64), dtype=float)
     for i in range(64):
@@ -58,28 +53,29 @@ def make_pattern_mask(pattern):
             dr = abs(r1 - r2)
             dc = abs(c1 - c2)
             
-            valid = False
             # A square should always be able to attend to itself
             if i == j:
                 valid = True
-            elif pattern == 'rook' and (dr == 0 or dc == 0):
-                valid = True
-            elif pattern == 'bishop' and (dr == dc):
-                valid = True
-            elif pattern == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
-                valid = True
-            elif pattern in ('knight+', 'knight_plus') and (dr, dc) in knight_2step_offsets:
-                valid = True
-            elif pattern == 'queen' and (dr == 0 or dc == 0 or dr == dc):
-                valid = True
-            elif pattern == 'king' and (dr <= 1 and dc <= 1):
-                valid = True
-            elif pattern == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
-                valid = True
-            elif pattern == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
-                valid = True
-            elif pattern == 'all' and ((dr == 0 or dc == 0 or dr == dc) or (dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
-                valid = True
+            else:
+                matches_base = False
+                if base_pattern == 'rook' and (dr == 0 or dc == 0):
+                    matches_base = True
+                elif base_pattern == 'bishop' and (dr == dc):
+                    matches_base = True
+                elif base_pattern == 'knight' and ((dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+                    matches_base = True
+                elif base_pattern == 'queen' and (dr == 0 or dc == 0 or dr == dc):
+                    matches_base = True
+                elif base_pattern == 'king' and (dr <= 1 and dc <= 1):
+                    matches_base = True
+                elif base_pattern == 'pawn' and ((dr == 1 and dc <= 1) or (dr == 2 and dc == 0)):
+                    matches_base = True
+                elif base_pattern == 'color' and ((r1 + c1) % 2 == (r2 + c2) % 2):
+                    matches_base = True
+                elif base_pattern == 'all' and ((dr == 0 or dc == 0 or dr == dc) or (dr == 2 and dc == 1) or (dr == 1 and dc == 2)):
+                    matches_base = True
+
+                valid = (not matches_base) if is_anti else matches_base
                 
             if not valid:
                 mask[i, j] = -100.0
