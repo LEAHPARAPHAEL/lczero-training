@@ -55,4 +55,7 @@ sbatch --job-name=lustre_purge --time=03:00:00 --ntasks=1 --cpus-per-task=1 --wr
 rsync -avzP leela/ jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/data/
 
 # Jean-Zay -> Local
-rsync -avzP jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/networks/resTnet/resTnet-100000.pb.gz /home/raph/leela/networks/resTnet/
+rsync -avzP jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/networks/ /home/raph/leela/networks/
+rsync -avzP jean-zay:/lustre/fsn1/projects/rech/kwf/uzr96yg/leela/logs/ /home/raph/leela/logs/
+
+rsync -avzP jean-zay:/lustre/fswork/projects/rech/kwf/uzr96yg/lc0/logs/ /home/raph/leela/configs/
