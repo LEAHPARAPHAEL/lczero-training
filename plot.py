@@ -77,13 +77,13 @@ def plot_training_metrics(model_paths, metrics_to_plot=None, output_path=None):
                 steps = sorted(model_data[metric].keys())
                 values = [model_data[metric][step] for step in steps]
                 
-                plt.plot(steps, values, linestyle='-', linewidth=4, label=model_name)
+                plt.plot(steps, values, linestyle='-', linewidth=2, label=model_name)
                 metric_has_data = True
 
         if metric_has_data:
             #plt.title(f"Comparison: {metric}", fontsize=14, fontweight='bold')
-            plt.xlabel("Training Step", fontsize=18)
-            plt.ylabel(metric, fontsize=18)
+            plt.xlabel("Training Step", fontsize=16)
+            plt.ylabel(metric, fontsize=16)
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.legend(loc="best", fontsize = 16)
             plt.tight_layout()
@@ -107,9 +107,12 @@ if __name__ == "__main__":
     
     # 1. List of paths to your models' log files
     MODELS_LOG_PATHS = [
-        "/home/raph/leela/logs/Smolgen.txt",
-        "/home/raph/leela/logs/Masks.txt",
-        "/home/raph/leela/logs/Plain.txt",
+        "/home/raph/leela/logs/BT4.txt",
+        "/home/raph/leela/logs/M2T14.txt",
+        "/home/raph/leela/logs/M4T12.txt",
+        "/home/raph/leela/logs/M6T9.txt",
+        "/home/raph/leela/logs/M8T8.txt",
+        "/home/raph/leela/logs/M10T6.txt"
     ]
 
     # 2. List of metrics to plot (Set to None to plot ALL found metrics)
@@ -117,7 +120,7 @@ if __name__ == "__main__":
 
     # 3. Directory where plots will be saved
     # If set to None, plots will open in pop-up windows instead.
-    OUTPUT_PLOT_DIR = "/home/raph/leela/plots/masks"
+    OUTPUT_PLOT_DIR = "/home/raph/leela/plots/sota"
 
     # --- EXECUTION ---
     plot_training_metrics(

@@ -1,0 +1,20 @@
+%YAML 1.2
+--- 
+BT4:
+  policy: 61.02
+  nps: 2662
+M2T14:
+  policy: 61.23
+  nps: 2818
+M4T12:
+  policy: 60.84
+  nps: 3107
+M6T9:
+  policy: 60.34
+  nps: 3766 
+M8T8:
+  policy: 60.29
+  nps: 3897
+M10T6:
+  policy: 59.67
+  nps: 4473
